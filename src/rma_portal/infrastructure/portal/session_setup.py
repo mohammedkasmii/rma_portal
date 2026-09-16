@@ -25,27 +25,48 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from collections.abc import Awaitable, Callable
 
 from camoufox.addons import DefaultAddons
 from camoufox.async_api import AsyncCamoufox
 
-from rma_portal.application.dto import BrowserProfileLockedError
+from rma_portal.application.dto import BrowserProfileLockedError, BrowserTeardownError
 from rma_portal.config import Settings
-from rma_portal.infrastructure.portal.profile_lock import acquire_profile_lock
+from rma_portal.infrastructure.portal.profile_lock import (
+    acquire_profile_lock,
+    mark_profile_teardown_unconfirmed,
+)
+
+logger = logging.getLogger(__name__)
 
 OpenAndWait = Callable[[Settings], Awaitable[None]]
 
+_TEARDOWN_TIMEOUT_SECONDS = 30.0
 
-async def launch_visible_browser_and_wait(settings: Settings) -> None:
+
+async def launch_visible_browser_and_wait(
+    settings: Settings, *, teardown_timeout_seconds: float = _TEARDOWN_TIMEOUT_SECONDS
+) -> None:
     """Open the visible persistent profile and block until it is closed.
 
     Does **not** acquire the profile lock itself -- callers do that, since
     what happens on a lock conflict differs (a printed message for the CLI
-    fallback vs. a silent, loggable skip for the in-app connector).
+    fallback vs. a silent, loggable skip for the in-app connector). A
+    caller that catches :class:`BrowserTeardownError` from this function
+    must not release that lock either -- it must call
+    ``profile_lock.mark_profile_teardown_unconfirmed`` instead, the same
+    way ``CamoufoxPortalReader.__aexit__`` already does for the background
+    reader's own browser.
+
+    Browser close (teardown) is bounded independently of the employee's
+    own wait for the window to close (which is deliberately unbounded --
+    see ``_wait_until_closed``): the same reasoning as
+    ``SyncAgreementQueue.verify_session`` applies here -- a stalled
+    ``AsyncCamoufox`` close must not leave CONNECTING stuck forever.
     """
     settings.browser_profile_dir.mkdir(parents=True, exist_ok=True)
-    async with AsyncCamoufox(
+    manager = AsyncCamoufox(
         persistent_context=True,
         user_data_dir=str(settings.browser_profile_dir),
         headless=False,
@@ -55,10 +76,31 @@ async def launch_visible_browser_and_wait(settings: Settings) -> None:
         locale=settings.portal_locale,
         timezone_id=settings.portal_timezone,
         firefox_user_prefs={"network.cookie.cookieBehavior": 4},
-    ) as context:
+    )
+    context = await manager.__aenter__()
+    body_succeeded = False
+    try:
         page = context.pages[0] if context.pages else await context.new_page()
         await page.goto(settings.omegaflow_start_route, wait_until="domcontentloaded")
         await _wait_until_closed(context)
+        body_succeeded = True
+    finally:
+        try:
+            await asyncio.wait_for(
+                manager.__aexit__(None, None, None), timeout=teardown_timeout_seconds
+            )
+        except Exception:  # noqa: BLE001 - reported to the caller below, not swallowed
+            logger.exception("échec du nettoyage du navigateur de connexion visible")
+            if body_succeeded:
+                # Nothing else is propagating from the try body -- safe to
+                # raise this as the method's own outcome. If something
+                # *is* already propagating (most commonly a cancellation
+                # from SessionConnector.shutdown()), that exception must
+                # win instead -- see the module docstring on cancellation.
+                raise BrowserTeardownError(
+                    "Le nettoyage du navigateur de connexion n'a pas pu être confirmé "
+                    f"après {teardown_timeout_seconds:.0f}s."
+                ) from None
 
 
 async def run_session_setup(
@@ -83,8 +125,19 @@ async def run_session_setup(
     print("Fermez la fenêtre du navigateur une fois la connexion terminée.")
 
     try:
-        with acquire_profile_lock(settings.browser_lock_path):
-            await open_and_wait(settings)
+        with acquire_profile_lock(settings.browser_lock_path) as lock:
+            try:
+                await open_and_wait(settings)
+            except BrowserTeardownError:
+                mark_profile_teardown_unconfirmed(
+                    settings.browser_lock_path, lock, "configuration manuelle de la session"
+                )
+                print(
+                    "Le navigateur s'est fermé, mais son nettoyage n'a pas pu être "
+                    "confirmé. Le profil restera indisponible tant que cet outil ou le "
+                    "Portail RMA n'auront pas été redémarrés."
+                )
+                return
     except BrowserProfileLockedError:
         print(
             "Impossible de configurer la session : le profil du navigateur "

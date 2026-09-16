@@ -75,7 +75,8 @@ class _FakeEmitter:
 
 
 class _FakePage(_FakeEmitter):
-    pass
+    async def goto(self, url: str, wait_until: str | None = None) -> None:
+        return None
 
 
 class _FakeContext(_FakeEmitter):
@@ -195,3 +196,51 @@ async def test_wait_until_closed_falls_back_to_polling_when_no_event_fires_at_al
         asyncio.wait_for(session_setup._wait_until_closed(context), timeout=1.0),
         vanish_soon(),
     )
+
+
+class _StallingManager:
+    """Fakes AsyncCamoufox itself: opens fine, but its own close (__aexit__)
+    hangs forever -- proves launch_visible_browser_and_wait's own bounded
+    cleanup, not just _wait_until_closed's."""
+
+    def __init__(self, context: _FakeContext, gate: asyncio.Event) -> None:
+        self._context = context
+        self._gate = gate
+
+    async def __aenter__(self) -> _FakeContext:
+        return self._context
+
+    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+        await self._gate.wait()
+
+
+@pytest.mark.asyncio
+async def test_launch_visible_browser_and_wait_raises_when_teardown_stalls(tmp_path, monkeypatch):
+    """Regression: the visible login browser's own AsyncCamoufox teardown
+    stalling must not hang launch_visible_browser_and_wait forever --
+    bounded, independently of the employee's own (unbounded) wait for the
+    window to close, this must raise BrowserTeardownError instead so the
+    caller (SessionConnector) can end CONNECTING and mark the profile
+    unavailable rather than silently releasing the lock."""
+    settings = Settings(data_dir=tmp_path / "rma-portal-data")
+    page = _FakePage()
+    context = _FakeContext(pages=[page])
+    gate = asyncio.Event()  # deliberately never set: teardown hangs
+    monkeypatch.setattr(
+        session_setup, "AsyncCamoufox", lambda **kwargs: _StallingManager(context, gate)
+    )
+
+    async def close_soon() -> None:
+        await asyncio.sleep(0)
+        context.close_via_context_event()
+
+    with pytest.raises(session_setup.BrowserTeardownError):
+        await asyncio.wait_for(
+            asyncio.gather(
+                session_setup.launch_visible_browser_and_wait(
+                    settings, teardown_timeout_seconds=0.05
+                ),
+                close_soon(),
+            ),
+            timeout=1.0,
+        )

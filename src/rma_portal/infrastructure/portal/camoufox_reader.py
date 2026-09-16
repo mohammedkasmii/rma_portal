@@ -20,6 +20,7 @@ from urllib.parse import urljoin
 
 from camoufox.addons import DefaultAddons
 from camoufox.async_api import AsyncCamoufox
+from filelock import FileLock
 
 from rma_portal.application.dto import (
     BrowserProfileLockedError,
@@ -38,7 +39,10 @@ from rma_portal.infrastructure.portal.parser import (
     parse_page_count,
     parse_queue_page,
 )
-from rma_portal.infrastructure.portal.profile_lock import acquire_profile_lock
+from rma_portal.infrastructure.portal.profile_lock import (
+    acquire_profile_lock,
+    mark_profile_teardown_unconfirmed,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +110,7 @@ class CamoufoxPortalReader:
         self._locale = locale
         self._headless = headless
         self._lock_cm = None
+        self._lock: FileLock | None = None
         self._manager: AsyncCamoufox | None = None
         self._context = None
         self._page = None
@@ -113,7 +118,7 @@ class CamoufoxPortalReader:
 
     async def __aenter__(self) -> CamoufoxPortalReader:
         self._lock_cm = acquire_profile_lock(self._lock_path)
-        self._lock_cm.__enter__()
+        self._lock = self._lock_cm.__enter__()
         try:
             self._profile_dir.mkdir(parents=True, exist_ok=True)
             self._manager = AsyncCamoufox(
@@ -145,15 +150,27 @@ class CamoufoxPortalReader:
         exc: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
+        manager_closed = False
         try:
             if self._manager is not None:
                 await self._manager.__aexit__(exc_type, exc, traceback)
+            manager_closed = True
         finally:
             self._context = None
             self._page = None
             if self._lock_cm is not None:
+                if not manager_closed and self._lock is not None:
+                    # Teardown did not complete (e.g. a caller's bounding
+                    # asyncio.wait_for gave up on a stalled close) -- never
+                    # release the lock in that case, or a fresh launch could
+                    # race a browser process that might still be running
+                    # against this same profile.
+                    mark_profile_teardown_unconfirmed(
+                        self._lock_path, self._lock, "nettoyage du navigateur OmegaFlow"
+                    )
                 self._lock_cm.__exit__(exc_type, exc, traceback)
                 self._lock_cm = None
+                self._lock = None
 
     async def _read_only_route(self, route: Any, request: Any) -> None:
         method = request.method.upper()

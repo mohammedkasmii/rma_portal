@@ -13,8 +13,14 @@ dashboard can tell them apart instead of one long opaque "CONNECTING":
 
 1. **connecting** (``is_active``) -- the visible login browser is open,
    waiting for the employee to close it. Bounded only by the employee,
-   never a timer. Ends the moment the window closes and cleanup/lock
-   release finish -- it does *not* include what happens next.
+   never a timer, but the *cleanup* that follows the window closing is
+   itself bounded (see ``session_setup.launch_visible_browser_and_wait``).
+   Ends the moment the window closes and cleanup finishes or gives up --
+   it does *not* include what happens next. A cleanup that cannot be
+   confirmed never releases the profile lock (see
+   ``profile_lock.mark_profile_teardown_unconfirmed``), so the profile
+   stays unavailable until the application restarts rather than risking a
+   fresh launch racing a browser that might still be running.
 2. **verifying** (``is_verifying``) -- a short, bounded, read-only check
    (``verify_session``, in practice ``SyncAgreementQueue.verify_session``)
    that the saved profile is still authenticated. A successful check marks
@@ -35,9 +41,12 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 
-from rma_portal.application.dto import BrowserProfileLockedError
+from rma_portal.application.dto import BrowserProfileLockedError, BrowserTeardownError
 from rma_portal.config import Settings
-from rma_portal.infrastructure.portal.profile_lock import acquire_profile_lock
+from rma_portal.infrastructure.portal.profile_lock import (
+    acquire_profile_lock,
+    mark_profile_teardown_unconfirmed,
+)
 from rma_portal.infrastructure.portal.session_setup import (
     OpenAndWait,
     launch_visible_browser_and_wait,
@@ -103,11 +112,14 @@ class SessionConnector:
     async def shutdown(self) -> None:
         """Cancel any in-flight phase and wait for cleanup.
 
-        Cancelling inside the ``async with AsyncCamoufox(...)`` block in
-        ``launch_visible_browser_and_wait`` still runs that context
-        manager's ``__aexit__`` (closing the browser) via Python's normal
-        exception-propagation semantics, and the ``with
-        acquire_profile_lock(...)`` around it still releases the lock.
+        Cancelling ``launch_visible_browser_and_wait`` mid-flight still runs
+        its own bounded browser close via Python's normal exception-
+        propagation semantics, and the ``with acquire_profile_lock(...)``
+        around it still releases the lock afterward -- unless that bounded
+        close itself also fails to confirm within its own bound, in which
+        case the profile is deliberately left unavailable rather than
+        risking a fresh launch racing a browser that might still be
+        running (see ``launch_visible_browser_and_wait``'s docstring).
         Awaiting each cancelled task here (instead of firing-and-forgetting)
         is what keeps shutdown free of "Task was destroyed but it is
         pending" warnings.
@@ -123,9 +135,26 @@ class SessionConnector:
     async def _run_login(self) -> None:
         started = time.monotonic()
         try:
-            with acquire_profile_lock(self._settings.browser_lock_path):
+            with acquire_profile_lock(self._settings.browser_lock_path) as lock:
                 logger.info("login browser opened")
-                await self._open_and_wait(self._settings)
+                try:
+                    await self._open_and_wait(self._settings)
+                except BrowserTeardownError:
+                    # The window closed normally, but its own bounded
+                    # cleanup could not be confirmed -- never let the
+                    # `with` block above release the lock in that case (a
+                    # fresh attempt could otherwise race a browser process
+                    # that might still be running against this profile).
+                    mark_profile_teardown_unconfirmed(
+                        self._settings.browser_lock_path,
+                        lock,
+                        "fermeture de la fenêtre de connexion",
+                    )
+                    logger.error(
+                        "login window cleanup failed/timed out elapsed=%.1fs",
+                        time.monotonic() - started,
+                    )
+                    return
                 logger.info("login window closed elapsed=%.1fs", time.monotonic() - started)
         except BrowserProfileLockedError:
             logger.info("connexion manuelle ignorée : profil de navigateur déjà utilisé")

@@ -211,9 +211,17 @@ class SyncAgreementQueue:
         only delivers a cancellation at the *current* await point, so a
         fresh ``await`` started while handling that cancellation is not
         itself re-cancelled by the same timeout. Cleanup is still always
-        awaited (bounded) rather than abandoned, so the profile lock is
-        never left held past this method returning -- a fresh connect
-        attempt can never race a still-running profile.
+        awaited (bounded) rather than abandoned.
+
+        A cleanup failure/timeout always wins over whatever the auth check
+        found: this method never reports READY (or persists any other
+        outcome the check determined) for a browser session it can no
+        longer account for. ``CamoufoxPortalReader.__aexit__`` itself
+        never releases the profile lock when its own teardown did not
+        complete, so the profile is unavailable (a fast, actionable
+        ``BrowserProfileLockedError`` on the next attempt) until the
+        application restarts -- a fresh connect attempt can never race a
+        browser process that might still be running against it.
         """
         now = datetime.now(UTC)
         with self._uow_factory() as uow:
@@ -229,6 +237,7 @@ class SyncAgreementQueue:
             return False
 
         reader: PortalReader | None = None
+        cleanup_failed = False
         try:
             try:
                 reader = await asyncio.wait_for(reader_cm.__aenter__(), timeout=timeout_seconds)
@@ -270,9 +279,25 @@ class SyncAgreementQueue:
                         reader_cm.__aexit__(None, None, None), timeout=timeout_seconds
                     )
                 except Exception:  # noqa: BLE001 - never let cleanup crash the check
+                    cleanup_failed = True
                     logger.exception(
                         "échec du nettoyage du navigateur après vérification de session"
                     )
+
+        if cleanup_failed:
+            # Overrides whatever the auth check found (even a successful
+            # one): an unconfirmed teardown means this browser/profile can
+            # no longer be accounted for, so nothing it reported can be
+            # trusted as a basis for READY. CamoufoxPortalReader.__aexit__
+            # has already kept the profile lock held (see its own
+            # docstring/mark_profile_teardown_unconfirmed) -- this is only
+            # the persisted, user-facing side of the same fact.
+            status, error = (
+                SessionStatus.ERROR,
+                "Le nettoyage du navigateur après vérification de session a échoué ou "
+                "a expiré ; le profil reste indisponible jusqu'au redémarrage du "
+                "Portail RMA.",
+            )
 
         self._mark_session_checked(account_id, status, now, error)
         return status is SessionStatus.READY

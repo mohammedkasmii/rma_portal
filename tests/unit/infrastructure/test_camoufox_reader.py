@@ -28,10 +28,10 @@ LOADING_SHELL_HTML = '<html><body><div id="knack-body">Loading...</div></body></
 LOGIN_FORM_HTML = '<html><body><input type="password"></body></html>'
 
 
-def _make_reader() -> CamoufoxPortalReader:
+def _make_reader(lock_path: Path = Path("unused-lock-path")) -> CamoufoxPortalReader:
     return CamoufoxPortalReader(
         profile_dir=Path("unused-profile-dir"),
-        lock_path=Path("unused-lock-path"),
+        lock_path=lock_path,
         start_route=START_ROUTE,
         base_url="https://omegaflow.ma/",
         procedure_value=PROCEDURE_VALUE,
@@ -213,3 +213,64 @@ async def test_verify_authenticated_never_applies_the_filter_or_paginates():
 
     assert page.select_option_calls == []
     assert page.clicked == []
+
+
+class _StallingManager:
+    """Fakes AsyncCamoufox's own browser-manager __aexit__ hanging forever
+    (e.g. a stuck close), so CamoufoxPortalReader.__aexit__'s bounded
+    caller (asyncio.wait_for) is what ends up cancelling it."""
+
+    def __init__(self, gate: asyncio.Event) -> None:
+        self._gate = gate
+
+    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+        await self._gate.wait()
+
+
+@pytest.mark.asyncio
+async def test_aexit_keeps_the_profile_lock_when_manager_teardown_stalls(tmp_path):
+    """Regression: authentication succeeding must not matter if teardown
+    itself cannot be confirmed -- __aexit__ must never release the profile
+    lock in that case (a fresh acquisition attempt on the same path must
+    then fail fast, not race a browser that might still be running)."""
+    from rma_portal.application.dto import BrowserProfileLockedError
+    from rma_portal.infrastructure.portal.profile_lock import acquire_profile_lock
+
+    lock_path = tmp_path / "profile.lock"
+    reader = _make_reader(lock_path=lock_path)
+    reader._lock_cm = acquire_profile_lock(lock_path)
+    reader._lock = reader._lock_cm.__enter__()
+    gate = asyncio.Event()  # deliberately never set: teardown stalls
+    reader._manager = _StallingManager(gate)
+
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(reader.__aexit__(None, None, None), timeout=0.05)
+
+    with (
+        pytest.raises(BrowserProfileLockedError, match="indisponible"),
+        acquire_profile_lock(lock_path),
+    ):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_aexit_releases_the_profile_lock_when_manager_teardown_succeeds(tmp_path):
+    """Sanity counterpart: a normal, confirmed teardown must still release
+    the lock as before -- only an *unconfirmed* one keeps it held."""
+    from rma_portal.infrastructure.portal.profile_lock import acquire_profile_lock
+
+    lock_path = tmp_path / "profile.lock"
+    reader = _make_reader(lock_path=lock_path)
+    reader._lock_cm = acquire_profile_lock(lock_path)
+    reader._lock = reader._lock_cm.__enter__()
+
+    class _CleanManager:
+        async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+            return None
+
+    reader._manager = _CleanManager()
+
+    await reader.__aexit__(None, None, None)
+
+    with acquire_profile_lock(lock_path):  # must succeed -- lock was released
+        pass

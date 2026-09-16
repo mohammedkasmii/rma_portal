@@ -23,9 +23,15 @@ import logging
 import pytest
 from filelock import FileLock, Timeout
 
-from rma_portal.application.dto import PortalAuthRequiredError, QueueSnapshot
+from rma_portal.application.dto import (
+    BrowserProfileLockedError,
+    BrowserTeardownError,
+    PortalAuthRequiredError,
+    QueueSnapshot,
+)
 from rma_portal.application.sync_service import SyncAgreementQueue
 from rma_portal.config import Settings
+from rma_portal.infrastructure.portal.profile_lock import acquire_profile_lock
 from rma_portal.infrastructure.portal.session_connector import SessionConnector
 from tests.unit.application.fakes import FakePortalReaderFactory
 from tests.unit.application.test_sync_service import _row
@@ -489,3 +495,35 @@ async def test_later_scheduled_poll_flips_ready_to_auth_required_and_preserves_d
     assert account.session_status.value == "AUTH_REQUIRED"
     assert state["a"].active is True
     assert state["a"].missing_complete_polls == 0
+
+
+@pytest.mark.asyncio
+async def test_login_teardown_failure_ends_connecting_and_marks_the_profile_unavailable(tmp_path):
+    """Regression: a stalled visible-login browser teardown (here
+    signalled by launch_visible_browser_and_wait raising
+    BrowserTeardownError, exactly as it does when its own bounded
+    AsyncCamoufox close does not finish) must not leave CONNECTING stuck,
+    must never start verification on the strength of a browser whose
+    teardown was never confirmed, and must leave the profile unavailable
+    (not silently release the lock) until the application restarts."""
+    settings = _settings(tmp_path)
+
+    async def open_and_wait_then_fail_teardown(_settings: Settings) -> None:
+        raise BrowserTeardownError("teardown stalled (test)")
+
+    verify = _ControllableVerify()
+    connector = _connector(
+        tmp_path, open_and_wait=open_and_wait_then_fail_teardown, verify_session=verify
+    )
+
+    connector.start()
+    await _wait_until(lambda: connector.is_active is False)
+
+    assert connector.is_verifying is False
+    assert verify.calls == []  # never started verification
+
+    with (
+        pytest.raises(BrowserProfileLockedError, match="indisponible"),
+        acquire_profile_lock(settings.browser_lock_path),
+    ):
+        pass

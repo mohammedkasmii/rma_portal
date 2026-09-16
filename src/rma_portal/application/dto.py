@@ -114,6 +114,18 @@ class BrowserProfileLockedError(Exception):
     """
 
 
+class BrowserTeardownError(Exception):
+    """A browser's teardown (close) did not complete within its bound.
+
+    Raised by ``session_setup.launch_visible_browser_and_wait`` when its own
+    bounded ``AsyncCamoufox`` close does not finish -- the caller must treat
+    the profile lock as unconfirmed rather than releasing it (see
+    ``infrastructure.portal.profile_lock.mark_profile_teardown_unconfirmed``),
+    since a fresh launch could otherwise race a browser process that might
+    still be running against the same profile.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class SyncResult:
     status: PollStatus | None = None

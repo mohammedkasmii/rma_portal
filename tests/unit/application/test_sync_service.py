@@ -582,6 +582,35 @@ async def test_verify_session_is_not_kept_pending_by_a_stalled_cleanup(
 
 
 @pytest.mark.asyncio
+async def test_verify_session_never_reports_ready_when_cleanup_fails_after_a_successful_check(
+    uow_factory, portal_account_id
+):
+    """Regression: the exact reported failure -- authentication succeeds,
+    but the browser-manager teardown stalls and cleanup times out. Before
+    this fix, verify_session still returned True and persisted READY,
+    because a cleanup failure was only logged, never allowed to override
+    what the (successful) auth check had already decided. A cleanup
+    failure/timeout must always win: return False, persist ERROR with an
+    actionable message, and never let a caller start the follow-up
+    synchronization on the strength of it."""
+    cleanup_gate = asyncio.Event()  # deliberately never set: cleanup hangs
+    factory = FakePortalReaderFactory(
+        polls=[QueueSnapshot(rows=(), pages_seen=1)],  # auth check succeeds quickly
+        aexit_gate=cleanup_gate,
+    )
+    sync = SyncAgreementQueue(factory, uow_factory)
+
+    verified = await asyncio.wait_for(sync.verify_session(0.05), timeout=1.0)
+
+    assert verified is False
+    with uow_factory() as uow:
+        account = uow.portal_accounts.get(portal_account_id)
+    assert account.session_status.value == "ERROR"
+    assert account.last_error
+    assert account.last_success_at is None
+
+
+@pytest.mark.asyncio
 async def test_verify_session_does_not_claim_a_full_synchronization_succeeded(
     uow_factory, portal_account_id
 ):
