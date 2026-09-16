@@ -46,7 +46,7 @@ class Settings:
     session_lifetime_hours: int = 12
     max_note_length: int = 2000
     omegaflow_base_url: str = "https://omegaflow.ma"
-    omegaflow_start_route: str = "https://omegaflow.ma/#/dossiers-en-instance-accord/"
+    omegaflow_start_route: str = "https://omegaflow.ma/#dossiers-en-instance-accord/"
     omegaflow_procedure_value: str = "5ed644a2faf17c0015d8c367"
     portal_timezone: str = "Africa/Casablanca"
     portal_locale: str = "fr-FR"

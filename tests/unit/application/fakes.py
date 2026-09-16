@@ -30,6 +30,7 @@ class FakePortalReader:
     poll: ScriptedPoll
     details_by_id: dict[str, DossierDetails | Exception] = field(default_factory=dict)
     lock_held: bool = False
+    aenter_exception: Exception | None = None
     read_calls: list[str] = field(default_factory=list)
 
     async def __aenter__(self) -> FakePortalReader:
@@ -40,6 +41,8 @@ class FakePortalReader:
         await asyncio.sleep(0)
         if self.lock_held:
             raise BrowserProfileLockedError("profile locked (test)")
+        if self.aenter_exception is not None:
+            raise self.aenter_exception
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
@@ -78,15 +81,22 @@ class FakePortalReaderFactory:
         polls: list[QueueSnapshot | Exception],
         details_by_id: dict[str, DossierDetails | Exception] | None = None,
         lock_held: Callable[[], bool] | bool = False,
+        aenter_exception: Exception | None = None,
     ) -> None:
         self._polls = list(polls)
         self._details_by_id = details_by_id or {}
         self._lock_held = lock_held
+        self._aenter_exception = aenter_exception
         self.readers: list[FakePortalReader] = []
 
     def open(self) -> FakePortalReader:
         held = self._lock_held() if callable(self._lock_held) else self._lock_held
         result = self._polls.pop(0) if self._polls else QueueSnapshot()
-        reader = FakePortalReader(poll=ScriptedPoll(result), details_by_id=self._details_by_id, lock_held=held)
+        reader = FakePortalReader(
+            poll=ScriptedPoll(result),
+            details_by_id=self._details_by_id,
+            lock_held=held,
+            aenter_exception=self._aenter_exception,
+        )
         self.readers.append(reader)
         return reader

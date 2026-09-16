@@ -83,12 +83,28 @@ One poll:
    time (incrementing `missing_complete_polls`, deactivating at 2
    consecutive absences).
 4. Persists that outcome transactionally per dossier, then fetches detail
-   pages (once for every newly created/reactivated dossier, plus a retry for
-   any dossier whose previous detail fetch failed or never ran) — a detail
-   failure is recorded on the dossier and retried on the next poll; it never
-   removes the list-level detection or its notification.
+   pages for every dossier that is new, reactivated, has a changed
+   `portal_status`, or whose previous detail fetch failed or never ran (a
+   dossier is queued for at most one detail fetch per poll even if it
+   matches more than one of these reasons). A detail failure is recorded on
+   the dossier and retried on the next poll; it never removes the
+   list-level detection or its notification. An unchanged, already-complete
+   dossier is never re-fetched.
 5. Records a `poll_runs` row and updates `portal_accounts` (`last_poll_at`,
    `last_success_at` only on `COMPLETE`, `session_status`, `last_error`).
+
+**Failure handling**: a `poll_runs` row (and `portal_accounts.last_poll_at`)
+is only ever created *after* the portal reader's browser/profile context has
+actually opened. `BrowserProfileLockedError` (session configuration owns the
+profile) is therefore a safe skip that leaves **no** `poll_runs` row at all.
+Any other failure to launch or enter the reader — a Camoufox/Playwright
+error, not a domain-level `PortalAuthRequiredError`/`PortalReadError` — gets
+exactly one `poll_runs` row, created and finished as `FAILED` together in
+one transaction, with `portal_accounts.session_status` set to `ERROR` and a
+short technical message in `last_error`; the existing dataset is untouched.
+`SyncAgreementQueue.execute()` never raises for this case, so the scheduler
+loop keeps running on its next interval and the manual refresh endpoint
+re-renders the dashboard (showing that error banner) instead of a 500.
 
 **Baseline**: the first `COMPLETE` poll for an account stores every
 currently-listed dossier and raises **zero** notifications (this is

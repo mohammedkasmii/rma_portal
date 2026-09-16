@@ -18,7 +18,19 @@ from rma_portal.application.dto import (
 from rma_portal.application.sync_service import SyncAgreementQueue
 from rma_portal.domain.enums import PollStatus, WorkStatus
 from rma_portal.domain.models import DossierDates, WorkStatusConflict
+from rma_portal.infrastructure.db.models import PollRunRow
+from rma_portal.infrastructure.db.session import create_session_factory
 from tests.unit.application.fakes import FakePortalReaderFactory
+
+
+def _poll_run_count(engine) -> int:
+    from sqlalchemy import func, select
+
+    session = create_session_factory(engine)()
+    try:
+        return session.execute(select(func.count()).select_from(PollRunRow)).scalar_one()
+    finally:
+        session.close()
 
 
 def _row(record_id: str, **overrides) -> QueueRow:
@@ -296,7 +308,7 @@ async def test_concurrent_refreshes_execute_only_once(uow_factory, portal_accoun
 
 
 @pytest.mark.asyncio
-async def test_profile_lock_causes_a_safe_skip(uow_factory, portal_account_id):
+async def test_profile_lock_causes_a_safe_skip(uow_factory, portal_account_id, engine):
     factory = FakePortalReaderFactory(
         polls=[QueueSnapshot(rows=(_row("a"),), pages_seen=1)], lock_held=True
     )
@@ -309,6 +321,9 @@ async def test_profile_lock_causes_a_safe_skip(uow_factory, portal_account_id):
         assert uow.dossiers.existing_state_by_account(portal_account_id) == {}
         account = uow.portal_accounts.get(portal_account_id)
     assert account.last_success_at is None
+    assert account.last_poll_at is None
+    # A skip must leave no poll_runs record at all -- not even an unfinished one.
+    assert _poll_run_count(engine) == 0
 
 
 @pytest.mark.asyncio
@@ -323,3 +338,94 @@ async def test_portal_read_error_marks_poll_failed(uow_factory, portal_account_i
         account = uow.portal_accounts.get(portal_account_id)
     assert account.session_status.value == "ERROR"
     assert account.last_error == "cannot reach portal"
+
+
+@pytest.mark.asyncio
+async def test_browser_context_launch_failure_finishes_poll_as_failed(
+    uow_factory, portal_account_id, engine
+):
+    """A Camoufox launch/context-entry failure (not a profile-lock skip)
+    must preserve any existing dataset, finish the poll as FAILED with a
+    short technical message, and never raise out of execute() -- so the
+    scheduler survives to its next interval and a manual refresh never 500s.
+    """
+    factory = FakePortalReaderFactory(
+        polls=[QueueSnapshot(rows=(_row("a"),), pages_seen=1)],
+        aenter_exception=RuntimeError("no display available"),
+    )
+    sync = SyncAgreementQueue(factory, uow_factory)
+
+    result = await sync.execute()
+
+    assert result.status == PollStatus.FAILED
+    assert result.skipped is False
+    assert "RuntimeError" in result.error
+    assert "no display available" in result.error
+    with uow_factory() as uow:
+        account = uow.portal_accounts.get(portal_account_id)
+        # No dossier was ever created by a poll that never reached the reader.
+        assert uow.dossiers.existing_state_by_account(portal_account_id) == {}
+    assert account.session_status.value == "ERROR"
+    assert account.last_error == result.error
+    assert account.last_poll_at is not None
+    # Exactly one record, created and finished together -- never left dangling.
+    assert _poll_run_count(engine) == 1
+
+    # The scheduler must be able to run again on its next interval.
+    result2 = await sync.execute()
+    assert result2.status == PollStatus.FAILED
+    assert _poll_run_count(engine) == 2
+
+
+@pytest.mark.asyncio
+async def test_unchanged_complete_dossier_is_not_fetched_again(uow_factory, portal_account_id):
+    row = _row("a")
+    factory = FakePortalReaderFactory(polls=[QueueSnapshot(rows=(row,), pages_seen=1), QueueSnapshot(rows=(row,), pages_seen=1)])
+    sync = SyncAgreementQueue(factory, uow_factory)
+
+    await sync.execute()  # baseline: fetches "a" once
+    assert factory.readers[0].read_calls == ["a"]
+
+    await sync.execute()  # unchanged row, detail already complete
+    assert factory.readers[1].read_calls == []
+
+
+@pytest.mark.asyncio
+async def test_portal_status_change_triggers_one_detail_fetch(uow_factory, portal_account_id):
+    factory = FakePortalReaderFactory(
+        polls=[
+            QueueSnapshot(rows=(_row("a", portal_status="En instance"),), pages_seen=1),
+            QueueSnapshot(rows=(_row("a", portal_status="En cours"),), pages_seen=1),
+        ]
+    )
+    sync = SyncAgreementQueue(factory, uow_factory)
+
+    await sync.execute()  # baseline
+    assert factory.readers[0].read_calls == ["a"]
+
+    await sync.execute()  # status changed -> exactly one refetch, not two
+    assert factory.readers[1].read_calls == ["a"]
+
+    with uow_factory() as uow:
+        dossier = uow.dossiers.get_by_record_id(portal_account_id, "a")
+    assert dossier.portal_status == "En cours"
+
+
+@pytest.mark.asyncio
+async def test_missing_detail_value_causes_a_retry(uow_factory, portal_account_id):
+    """A dossier whose detail was never successfully fetched
+    (detail_complete=False) must be retried even when the list row itself
+    is otherwise unchanged."""
+    with uow_factory() as uow:
+        uow.dossiers.create_from_row(portal_account_id, _row("a"), datetime.now(UTC))
+        uow.commit()
+
+    factory = FakePortalReaderFactory(polls=[QueueSnapshot(rows=(_row("a"),), pages_seen=1)])
+    sync = SyncAgreementQueue(factory, uow_factory)
+
+    await sync.execute()
+
+    assert factory.readers[0].read_calls == ["a"]
+    with uow_factory() as uow:
+        dossier = uow.dossiers.get_by_record_id(portal_account_id, "a")
+    assert dossier.detail_complete is True

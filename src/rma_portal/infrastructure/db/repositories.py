@@ -250,14 +250,15 @@ class SqlAlchemyDossierRepository:
         )
         return _to_domain_dossier(orm_row)
 
-    def touch(self, account_id: int, row: QueueRow, now: datetime) -> Dossier:
+    def touch(self, account_id: int, row: QueueRow, now: datetime) -> tuple[Dossier, bool]:
         orm_row = self._get_row(account_id, row.record_id)
         if orm_row is None:
             raise LookupError(f"dossier {row.record_id} not found for account {account_id}")
+        status_changed = orm_row.portal_status != row.portal_status
         _apply_row_fields(orm_row, row)
         orm_row.last_seen_at = now
         orm_row.missing_complete_polls = 0
-        return _to_domain_dossier(orm_row)
+        return _to_domain_dossier(orm_row), status_changed
 
     def reactivate(self, account_id: int, row: QueueRow, now: datetime) -> Dossier:
         orm_row = self._get_row(account_id, row.record_id)

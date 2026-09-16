@@ -77,7 +77,14 @@ class DossierRepository(Protocol):
 
     def create_from_row(self, account_id: int, row: QueueRow, now: datetime) -> Dossier: ...
 
-    def touch(self, account_id: int, row: QueueRow, now: datetime) -> Dossier: ...
+    def touch(self, account_id: int, row: QueueRow, now: datetime) -> tuple[Dossier, bool]:
+        """Refresh an already-active dossier's list fields.
+
+        Returns the updated dossier and whether its portal_status changed
+        from what was stored, since a status change alone (without becoming
+        a "new" or "reactivated" dossier) still warrants a detail refetch.
+        """
+        ...
 
     def reactivate(self, account_id: int, row: QueueRow, now: datetime) -> Dossier: ...
 

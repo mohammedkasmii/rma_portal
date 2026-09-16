@@ -8,19 +8,32 @@ data, dossier number, name, registration or amount.
 
 ## Route and list contract used by V1
 
-- Start route: `https://omegaflow.ma/#/dossiers-en-instance-accord/`
+- Start route: `https://omegaflow.ma/#dossiers-en-instance-accord/` (no slash after `#` — confirmed from the RMA_FIRST capture; the `#/` form is not a valid OmegaFlow route)
 - List root: `#view_1874`
-- Procedure filter (Chosen.js-enhanced `<select>`, the native element is
-  still selectable): `#kn-conn-1-field_219`
+- Procedure filter: `#kn-conn-1-field_219`. The captured markup shows this
+  native `<select>` rendered `style="display: none"` behind OmegaFlow's
+  Chosen widget (`class="chzn-select chzn-done"`) — it is never actually
+  visible. V1 selects it with Playwright's `force=True` (bypassing the
+  visibility actionability check that would otherwise wait indefinitely),
+  then reads the value back via `input_value()` to confirm the selection
+  stuck, and explicitly dispatches `input`/`change` events. Confirm the
+  event-driven refresh against a live session.
   - Required option label: `Garage agréé`
   - Captured option value: `5ed644a2faf17c0015d8c367`
 - The filter panel must be **expanded** before `#kn-submit-filters` exists
   in the DOM at all (it is not present by default). The capture did not
   record the exact toggle selector for "ajouter des filtres" — V1's reader
-  falls back to locating that French label by text. **Requires a live
-  session to confirm.**
+  falls back to locating that French label by text, scoped to `#view_1874`
+  (preferring a `.kn-add-filter` element when present) so it can never
+  interact with an unrelated element elsewhere on the page. **Requires a
+  live session to confirm the exact toggle markup.**
 - Search/submit button (only after the panel above is expanded):
   `#kn-submit-filters`
+- A successfully filtered view with **zero** matching dossiers is a valid,
+  `COMPLETE` result — V1 does not wait for a row to exist, only for the
+  view's AJAX refresh to settle (network-idle plus, if present, a loading
+  indicator clearing). The loading indicator's exact markup was not
+  captured. **Requires a live session to confirm.**
 - Rows: `#view_1874 table tbody tr[id]`
   - The `id` attribute is the stable portal identity (Knack record id: 24
     lowercase hex characters observed in the capture).

@@ -9,6 +9,7 @@ with in-memory fakes.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from datetime import UTC, datetime
 
@@ -81,41 +82,65 @@ class SyncAgreementQueue:
                 return SyncResult(status=None, skipped=True, skip_reason="portal account disabled")
             account_id = account.id
             baseline_already_completed = account.baseline_completed_at is not None
-            uow.portal_accounts.mark_poll_started(account_id, now)
-            poll_run = uow.poll_runs.start(account_id, now)
-            poll_run_id = poll_run.id
-            uow.commit()
 
+        # The browser/profile is opened *before* any poll_runs row is
+        # created: a BrowserProfileLockedError is a safe skip that must
+        # leave no record at all, and any other launch failure gets exactly
+        # one row, created and finished together as FAILED -- never a
+        # dangling "started but not finished" record.
         try:
             reader_cm = self._reader_factory.open()
         except BrowserProfileLockedError as exc:
             return SyncResult(status=None, skipped=True, skip_reason=str(exc))
 
-        snapshot = QueueSnapshot()
-        status: PollStatus
-        error: str | None = None
-
         try:
-            async with reader_cm as reader:
-                try:
-                    snapshot = await reader.read_agreement_queue()
-                    status = PollStatus.COMPLETE
-                except PortalAuthRequiredError as exc:
-                    status, error = PollStatus.AUTH_REQUIRED, str(exc)
-                except PortalPartialReadError as exc:
-                    snapshot, status, error = exc.partial, PollStatus.PARTIAL, str(exc)
-                except PortalReadError as exc:
-                    status, error = PollStatus.FAILED, str(exc)
-
-                created = reactivated = deactivated = notified = details_failed = 0
-                if status in (PollStatus.COMPLETE, PollStatus.PARTIAL):
-                    created, reactivated, deactivated, notified, details_failed = (
-                        await self._reconcile_and_enrich(
-                            reader, account_id, status, baseline_already_completed, snapshot, now
-                        )
-                    )
+            reader = await reader_cm.__aenter__()
         except BrowserProfileLockedError as exc:
             return SyncResult(status=None, skipped=True, skip_reason=str(exc))
+        except Exception as exc:  # noqa: BLE001 - any launch/context failure
+            return self._record_failed_poll(account_id, now, _short_error(exc))
+
+        try:
+            with self._uow_factory() as uow:
+                uow.portal_accounts.mark_poll_started(account_id, now)
+                poll_run = uow.poll_runs.start(account_id, now)
+                poll_run_id = poll_run.id
+                uow.commit()
+        except Exception as exc:  # noqa: BLE001 - cannot even record the attempt
+            with contextlib.suppress(Exception):
+                await reader_cm.__aexit__(None, None, None)
+            return self._record_failed_poll(account_id, now, _short_error(exc))
+
+        try:
+            snapshot = QueueSnapshot()
+            status: PollStatus
+            error: str | None = None
+
+            try:
+                snapshot = await reader.read_agreement_queue()
+                status = PollStatus.COMPLETE
+            except PortalAuthRequiredError as exc:
+                status, error = PollStatus.AUTH_REQUIRED, str(exc)
+            except PortalPartialReadError as exc:
+                snapshot, status, error = exc.partial, PollStatus.PARTIAL, str(exc)
+            except PortalReadError as exc:
+                status, error = PollStatus.FAILED, str(exc)
+
+            created = reactivated = deactivated = notified = details_failed = 0
+            if status in (PollStatus.COMPLETE, PollStatus.PARTIAL):
+                created, reactivated, deactivated, notified, details_failed = (
+                    await self._reconcile_and_enrich(
+                        reader, account_id, status, baseline_already_completed, snapshot, now
+                    )
+                )
+        except Exception as exc:  # noqa: BLE001 - unexpected mid-poll failure
+            status = PollStatus.FAILED
+            error = _short_error(exc)
+            snapshot = QueueSnapshot()
+            created = reactivated = deactivated = notified = details_failed = 0
+        finally:
+            with contextlib.suppress(Exception):
+                await reader_cm.__aexit__(None, None, None)
 
         completed_at = datetime.now(UTC)
         with self._uow_factory() as uow:
@@ -145,6 +170,29 @@ class SyncAgreementQueue:
             notifications_created=notified,
         )
 
+    def _record_failed_poll(self, account_id: int, started_at: datetime, error: str) -> SyncResult:
+        """A poll that never got a reader at all: one FAILED row, created
+        and finished in the same transaction so nothing is ever left
+        unfinished."""
+        completed_at = datetime.now(UTC)
+        with self._uow_factory() as uow:
+            uow.portal_accounts.mark_poll_started(account_id, started_at)
+            poll_run = uow.poll_runs.start(account_id, started_at)
+            uow.poll_runs.finish(
+                poll_run.id,
+                status=PollStatus.FAILED,
+                completed_at=completed_at,
+                rows_seen=0,
+                pages_seen=0,
+                details_failed=0,
+                error=error,
+            )
+            uow.portal_accounts.mark_poll_finished(
+                account_id, status=PollStatus.FAILED, polled_at=completed_at, error=error
+            )
+            uow.commit()
+        return SyncResult(status=PollStatus.FAILED, error=error)
+
     async def _reconcile_and_enrich(
         self,
         reader: PortalReader,
@@ -173,26 +221,33 @@ class SyncAgreementQueue:
             # Queried before any mutation below: a dossier created or
             # reactivated by *this* poll always has detail_complete=False
             # and must not also be picked up here, or its detail page would
-            # be fetched twice and double-count `details_failed`.
-            dossiers_needing_detail: list = list(uow.dossiers.dossiers_needing_detail_retry(account_id))
+            # be fetched twice and double-count `details_failed`. Keyed by
+            # dossier id so a dossier can never end up queued twice (e.g. a
+            # touched dossier whose status changed but whose previous detail
+            # fetch had also failed).
+            dossiers_needing_detail: dict[int, Dossier] = {
+                d.id: d for d in uow.dossiers.dossiers_needing_detail_retry(account_id)
+            }
             notified = 0
 
             for record_id in result.to_create:
                 dossier = uow.dossiers.create_from_row(account_id, rows_by_id[record_id], now)
-                dossiers_needing_detail.append(dossier)
+                dossiers_needing_detail[dossier.id] = dossier
                 if result.create_notifications:
                     uow.notifications.create(dossier.id, NotificationKind.NEW_AGREEMENT_DOSSIER, now)
                     notified += 1
 
             for record_id in result.to_reactivate:
                 dossier = uow.dossiers.reactivate(account_id, rows_by_id[record_id], now)
-                dossiers_needing_detail.append(dossier)
+                dossiers_needing_detail[dossier.id] = dossier
                 if result.create_notifications:
                     uow.notifications.create(dossier.id, NotificationKind.NEW_AGREEMENT_DOSSIER, now)
                     notified += 1
 
             for record_id in result.to_touch:
-                uow.dossiers.touch(account_id, rows_by_id[record_id], now)
+                dossier, status_changed = uow.dossiers.touch(account_id, rows_by_id[record_id], now)
+                if status_changed:
+                    dossiers_needing_detail[dossier.id] = dossier
 
             for record_id, count in result.absence_increments.items():
                 uow.dossiers.apply_absence_increment(account_id, record_id, count)
@@ -206,7 +261,7 @@ class SyncAgreementQueue:
             uow.commit()
 
         details_failed = 0
-        for dossier in dossiers_needing_detail:
+        for dossier in dossiers_needing_detail.values():
             ref = _as_portal_ref(dossier)
             try:
                 details = await reader.read_dossier_details(ref)
@@ -235,3 +290,12 @@ def _as_portal_ref(dossier: Dossier) -> PortalDossierRef:
 
 def _failed_details(error: str) -> DossierDetails:
     return DossierDetails(dates=DossierDates(), detail_complete=False, detail_error=error)
+
+
+_MAX_ERROR_LENGTH = 500
+
+
+def _short_error(exc: Exception) -> str:
+    """A short technical message safe to store in poll_runs/last_error."""
+    message = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+    return message[:_MAX_ERROR_LENGTH]

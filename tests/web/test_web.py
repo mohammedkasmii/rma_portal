@@ -178,6 +178,18 @@ def test_same_origin_check_rejects_prefix_bypass_attempt(
     assert response.status_code == 403
 
 
+def test_manual_refresh_survives_a_browser_launch_failure(client, employee_user, application):
+    """A Camoufox launch failure during a manual refresh must render the
+    dashboard (with its ERROR banner) instead of an unhandled HTTP 500."""
+    application.reader_factory._aenter_exception = RuntimeError("no display available")
+    login(client, "employee", EMPLOYEE_PASSWORD)
+
+    response = client.post("/refresh", headers={"origin": "http://testserver"})
+
+    assert response.status_code == 200
+    assert "La dernière synchronisation a échoué" in response.text
+
+
 def test_session_banner_shown_when_auth_required(client, employee_user, uow_factory, portal_account_id):
     with uow_factory() as uow:
         uow.portal_accounts.mark_poll_finished(

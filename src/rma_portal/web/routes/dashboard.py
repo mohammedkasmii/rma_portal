@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, Request
 
 from rma_portal.application.dashboard import compute_counts, filter_and_sort
@@ -8,6 +10,8 @@ from rma_portal.domain.enums import WorkStatus
 from rma_portal.domain.models import User
 from rma_portal.web.deps import check_same_origin, get_application, require_user
 from rma_portal.web.routes.auth import get_templates
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -76,5 +80,12 @@ async def manual_refresh(
     user: User = Depends(require_user),
     _: None = Depends(check_same_origin),
 ):
-    await app.sync_service.execute()
+    # SyncAgreementQueue already turns portal/browser failures into a normal
+    # FAILED SyncResult (see application.sync_service); this guards against
+    # any other unexpected error so a manual refresh always re-renders the
+    # dashboard (with its error banner) instead of surfacing an HTTP 500.
+    try:
+        await app.sync_service.execute()
+    except Exception:  # noqa: BLE001 - never let a refresh failure 500
+        logger.exception("manual refresh failed unexpectedly")
     return _render_dashboard(request, "partials/dashboard_content.html", app, user)

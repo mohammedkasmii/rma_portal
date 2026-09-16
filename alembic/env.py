@@ -20,7 +20,13 @@ def _database_url() -> str:
     override = config.get_main_option("sqlalchemy.url")
     if override:
         return override
-    return load_settings().database_url
+    settings = load_settings()
+    # `alembic upgrade head` is a documented standalone maintenance command
+    # (README.md), so it must work on a brand new machine where
+    # %LOCALAPPDATA%\RMAPortal does not exist yet -- SQLite cannot create
+    # the database file inside a missing directory.
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    return settings.database_url
 
 
 def run_migrations_offline() -> None:

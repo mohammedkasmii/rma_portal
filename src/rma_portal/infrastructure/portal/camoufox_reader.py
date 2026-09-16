@@ -191,23 +191,74 @@ class CamoufoxPortalReader:
         """Best-effort: expand the filter panel if the submit button is hidden.
 
         RMA_FIRST only captured ``#kn-submit-filters`` after this panel was
-        already expanded; the exact toggle selector was not captured. This
-        falls back to matching the French toggle text and is a no-op if the
-        button is already visible. Confirm against a live session.
+        already expanded; the exact toggle selector was not captured. The
+        fallback text search is scoped to ``#view_1874`` so it can never
+        click an unrelated "ajouter des filtres" link elsewhere on the page.
+        This is a no-op if the button is already visible. Confirm against a
+        live session.
         """
-        submit = page.locator("#kn-submit-filters")
+        view = page.locator("#view_1874")
+        submit = view.locator("#kn-submit-filters")
         if await submit.count() > 0 and await submit.first.is_visible():
             return
-        toggle = page.get_by_text(_FILTER_TOGGLE_PATTERN)
+        toggle = view.locator(".kn-add-filter")
+        if await toggle.count() == 0:
+            toggle = view.get_by_text(_FILTER_TOGGLE_PATTERN)
         if await toggle.count() > 0:
             await toggle.first.click()
             await submit.first.wait_for(state="visible", timeout=10_000)
 
     async def _apply_garage_agree_filter(self, page: Any) -> None:
+        """Select 'Garage agréé' on the Chosen-hidden native ``<select>``.
+
+        The real element is rendered ``style="display: none"`` behind
+        OmegaFlow's Chosen widget (RMA_FIRST), so a plain
+        ``select_option()`` would perform Playwright's visibility
+        actionability check and hang. ``force=True`` bypasses that check;
+        the native value is then read back to confirm the selection stuck,
+        and ``input``/``change`` are dispatched explicitly in case anything
+        downstream (Knack's own filtering, not the cosmetic Chosen UI)
+        depends on them rather than on Playwright's own event dispatch.
+        """
+        view = page.locator("#view_1874")
         await self._reveal_filter_submit_button(page)
-        procedure = page.locator("#kn-conn-1-field_219")
-        await procedure.select_option(value=self._procedure_value)
-        await page.locator("#kn-submit-filters").click()
+
+        procedure = view.locator("#kn-conn-1-field_219")
+        await procedure.wait_for(state="attached", timeout=15_000)
+        await procedure.select_option(value=self._procedure_value, force=True, timeout=15_000)
+
+        actual_value = await procedure.input_value()
+        if actual_value != self._procedure_value:
+            raise PortalReadError(
+                "Le filtre Garage agréé n'a pas pu être appliqué "
+                f"(valeur obtenue: {actual_value!r})."
+            )
+        await procedure.evaluate(
+            "el => {"
+            " el.dispatchEvent(new Event('input', {bubbles: true}));"
+            " el.dispatchEvent(new Event('change', {bubbles: true}));"
+            "}"
+        )
+
+        await view.locator("#kn-submit-filters").click()
+        await self._wait_for_view_refresh(page)
+
+    async def _wait_for_view_refresh(self, page: Any) -> None:
+        """Wait for the AJAX-driven view refresh to settle.
+
+        Deliberately does not require any row to exist: a successfully
+        filtered view with zero dossiers is valid and must produce a
+        COMPLETE snapshot with zero rows (see docs/omegaflow-contract.md).
+        Knack views typically show a transient loading indicator while an
+        AJAX refresh is in flight; if present, wait for it to clear before
+        falling back to the usual network-idle settle. Confirm the loading
+        indicator's exact markup against a live session.
+        """
+        loading = page.locator("#view_1874.kn-loading, #view_1874 .kn-loading-spinner")
+        with contextlib.suppress(Exception):
+            if await loading.count() > 0:
+                await loading.first.wait_for(state="detached", timeout=20_000)
+        await self._settle(page)
 
     async def _go_to_page(self, page: Any, page_number: int) -> None:
         select = page.locator("#view_1874 .kn-page-select").first
@@ -227,8 +278,6 @@ class CamoufoxPortalReader:
             await self._assert_authenticated()
             await page.locator("#view_1874").wait_for(state="visible", timeout=45_000)
             await self._apply_garage_agree_filter(page)
-            await page.locator("#view_1874 table tbody tr[id]").first.wait_for(timeout=45_000)
-            await self._settle(page)
 
             html = await page.content()
             await self._assert_authenticated()
@@ -241,6 +290,11 @@ class CamoufoxPortalReader:
                 await self._assert_authenticated()
                 pages_collected.append(parse_queue_page(html))
         except PortalAuthRequiredError:
+            raise
+        except PortalReadError:
+            # Already a well-typed, well-messaged domain error (e.g. the
+            # Garage agréé filter failing to apply) -- propagate as-is
+            # instead of losing its message inside a generic wrapper.
             raise
         except Exception as exc:
             message = f"Lecture incomplète de la liste OmegaFlow ({type(exc).__name__})."
