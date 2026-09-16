@@ -76,6 +76,13 @@ class Settings:
         return self.data_dir / "session-secret.key"
 
     @property
+    def session_state_path(self) -> Path:
+        """Captured OmegaFlow browser session (cookies/localStorage/
+        sessionStorage) -- see infrastructure.portal.session_state. Lives
+        next to the browser profile, never inside the source checkout."""
+        return self.data_dir / "omegaflow-session-state.json"
+
+    @property
     def log_dir(self) -> Path:
         return self.data_dir / "logs"
 

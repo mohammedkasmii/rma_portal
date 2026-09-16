@@ -10,11 +10,13 @@ new in-app connector.
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 from filelock import FileLock
 
 from rma_portal.config import Settings
+from rma_portal.infrastructure.portal import camoufox_reader as session_setup_reader
 from rma_portal.infrastructure.portal import session_setup
 from rma_portal.infrastructure.portal.session_setup import run_session_setup
 
@@ -74,15 +76,62 @@ class _FakeEmitter:
             handler(*args)
 
 
+class _FakeLocator:
+    def __init__(self, page: _FakePage, selector: str) -> None:
+        self.page = page
+        self.selector = selector
+
+    @property
+    def first(self) -> _FakeLocator:
+        return self
+
+    async def count(self) -> int:
+        return 1 if self.selector in self.page.visible_selectors else 0
+
+    async def is_visible(self) -> bool:
+        return self.selector in self.page.visible_selectors
+
+
 class _FakePage(_FakeEmitter):
+    def __init__(self) -> None:
+        super().__init__()
+        self.visible_selectors: set[str] = set()
+
     async def goto(self, url: str, wait_until: str | None = None) -> None:
         return None
+
+    def locator(self, selector: str) -> _FakeLocator:
+        return _FakeLocator(self, selector)
+
+    async def evaluate(self, script: str) -> dict:
+        return {"omega_session_start": "1", "omega_login_tracked": "true"}
+
+    def mark_authenticated(self) -> None:
+        """Simulates the employee finishing login: the authenticated
+        queue view (#view_1874) becomes visible."""
+        self.visible_selectors.add(session_setup_reader.AUTHENTICATED_VIEW_SELECTOR)
 
 
 class _FakeContext(_FakeEmitter):
     def __init__(self, pages: list[_FakePage] | None = None) -> None:
         super().__init__()
         self.pages: list[_FakePage] = list(pages) if pages is not None else []
+        self.added_cookies: list[dict] | None = None
+        self.added_init_scripts: list[str] = []
+
+    async def storage_state(self) -> dict:
+        return {
+            "cookies": [{"name": "omega_session", "value": "fake-cookie-value"}],
+            "origins": [
+                {"origin": "https://omegaflow.ma", "localStorage": [{"name": "k", "value": "v"}]}
+            ],
+        }
+
+    async def add_cookies(self, cookies: list[dict]) -> None:
+        self.added_cookies = cookies
+
+    async def add_init_script(self, script: str) -> None:
+        self.added_init_scripts.append(script)
 
     def close_via_context_event(self) -> None:
         """The documented-happy-path close: the context itself emits "close"."""
@@ -248,6 +297,126 @@ async def test_launch_visible_browser_and_wait_raises_when_teardown_stalls(tmp_p
             timeout=1.0,
         )
     assert marked == [True]
+
+
+class _CleanManager:
+    """Fakes AsyncCamoufox with a normal, immediately-successful close --
+    for tests about the login-detection/capture logic, not teardown
+    bounding (already covered by _StallingManager's tests above)."""
+
+    def __init__(self, context: _FakeContext) -> None:
+        self._context = context
+
+    async def __aenter__(self) -> _FakeContext:
+        return self._context
+
+    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_wait_for_login_or_close_returns_true_once_authenticated_view_appears():
+    page = _FakePage()
+    context = _FakeContext(pages=[page])
+
+    async def login_soon() -> None:
+        await asyncio.sleep(0)
+        page.mark_authenticated()
+
+    result, _ = await asyncio.gather(
+        asyncio.wait_for(session_setup._wait_for_login_or_close(context, page), timeout=1.0),
+        login_soon(),
+    )
+
+    assert result is True
+    assert context.pages == [page]  # this function itself never closes anything
+
+
+@pytest.mark.asyncio
+async def test_wait_for_login_or_close_returns_false_on_an_early_manual_close():
+    page = _FakePage()  # never authenticated
+    context = _FakeContext(pages=[page])
+
+    async def close_soon() -> None:
+        await asyncio.sleep(0)
+        context.close_via_context_event()
+
+    result, _ = await asyncio.gather(
+        asyncio.wait_for(session_setup._wait_for_login_or_close(context, page), timeout=1.0),
+        close_soon(),
+    )
+
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_launch_visible_browser_and_wait_captures_and_saves_state_once_authenticated(
+    tmp_path, monkeypatch
+):
+    """Regression: the actual reported bug -- closing the browser after a
+    successful manual login threw away the session because nothing
+    captured it before closing. Once the authenticated view is detected,
+    state must be captured and saved before the browser closes."""
+    settings = Settings(data_dir=tmp_path / "rma-portal-data")
+    monkeypatch.setattr(session_setup, "_LOGIN_POLL_INTERVAL_SECONDS", 0.01)
+    page = _FakePage()
+    context = _FakeContext(pages=[page])
+    monkeypatch.setattr(session_setup, "AsyncCamoufox", lambda **kwargs: _CleanManager(context))
+
+    async def login_soon() -> None:
+        # Deliberately does not also close the window here: the
+        # application closes it itself (through the existing bounded
+        # teardown) once authentication is detected -- a manual close
+        # racing the very same tick this fires would be an unrealistic
+        # scenario no real employee could actually produce.
+        await asyncio.sleep(0)
+        page.mark_authenticated()
+
+    await asyncio.wait_for(
+        asyncio.gather(
+            session_setup.launch_visible_browser_and_wait(settings),
+            login_soon(),
+        ),
+        timeout=1.0,
+    )
+
+    assert settings.session_state_path.exists()
+    saved = json.loads(settings.session_state_path.read_text(encoding="utf-8"))
+    assert saved["session_storage"]["items"]["omega_login_tracked"] == "true"
+    assert saved["session_storage"]["items"]["omega_session_start"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_launch_visible_browser_and_wait_preserves_saved_state_on_early_close(
+    tmp_path, monkeypatch
+):
+    """Regression: 'Preserve the last valid saved state if login is
+    cancelled or fails.' An early manual close (before authentication is
+    ever detected) must not touch a previously saved state file."""
+    settings = Settings(data_dir=tmp_path / "rma-portal-data")
+    settings.session_state_path.parent.mkdir(parents=True, exist_ok=True)
+    settings.session_state_path.write_text(
+        '{"cookies": [], "origins": [], "session_storage": {}}', encoding="utf-8"
+    )
+    before = settings.session_state_path.read_text(encoding="utf-8")
+
+    page = _FakePage()  # never authenticated
+    context = _FakeContext(pages=[page])
+    monkeypatch.setattr(session_setup, "AsyncCamoufox", lambda **kwargs: _CleanManager(context))
+
+    async def close_soon() -> None:
+        await asyncio.sleep(0)
+        context.close_via_context_event()
+
+    await asyncio.wait_for(
+        asyncio.gather(
+            session_setup.launch_visible_browser_and_wait(settings),
+            close_soon(),
+        ),
+        timeout=1.0,
+    )
+
+    assert settings.session_state_path.read_text(encoding="utf-8") == before
 
 
 class _FailingGotoPage(_FakePage):

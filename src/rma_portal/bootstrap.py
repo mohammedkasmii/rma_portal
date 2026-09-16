@@ -49,6 +49,7 @@ def build_application(settings: Settings | None = None) -> Application:
         base_url=settings.omegaflow_base_url,
         procedure_value=settings.omegaflow_procedure_value,
         timezone_id=settings.portal_timezone,
+        session_state_path=settings.session_state_path,
         locale=settings.portal_locale,
         headless=settings.headless_browser,
     )

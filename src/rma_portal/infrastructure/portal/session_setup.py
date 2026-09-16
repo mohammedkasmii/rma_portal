@@ -33,9 +33,15 @@ from camoufox.async_api import AsyncCamoufox
 
 from rma_portal.application.dto import BrowserProfileLockedError, BrowserTeardownError
 from rma_portal.config import Settings
+from rma_portal.infrastructure.portal.camoufox_reader import is_authenticated_view_present
 from rma_portal.infrastructure.portal.profile_lock import (
     acquire_profile_lock,
     mark_profile_teardown_unconfirmed,
+)
+from rma_portal.infrastructure.portal.session_state import (
+    capture_session_state,
+    origin_of,
+    save_session_state,
 )
 
 logger = logging.getLogger(__name__)
@@ -95,7 +101,17 @@ async def launch_visible_browser_and_wait(
     try:
         page = context.pages[0] if context.pages else await context.new_page()
         await page.goto(settings.omegaflow_start_route, wait_until="domcontentloaded")
-        await _wait_until_closed(context)
+        logged_in = await _wait_for_login_or_close(context, page)
+        if logged_in:
+            # Captured -- and saved -- while the browser is still open,
+            # *before* anything closes it: the persistent Firefox profile
+            # alone does not carry the authenticated session forward past
+            # this process exiting (see session_state.py). An early
+            # manual close (the employee gave up, or closed it before this
+            # was ever detected) skips this entirely and reports no
+            # success -- whatever was saved from a previous successful
+            # login is left exactly as it was.
+            await _capture_and_save_session_state(context, page, settings)
         body_succeeded = True
     finally:
         try:
@@ -116,6 +132,71 @@ async def launch_visible_browser_and_wait(
                     "Le nettoyage du navigateur de connexion n'a pas pu être confirmé "
                     f"après {teardown_timeout_seconds:.0f}s."
                 ) from None
+
+
+_LOGIN_POLL_INTERVAL_SECONDS = 0.5
+
+
+async def _wait_for_login_or_close(context, page) -> bool:
+    """Races two outcomes while the visible login browser is open:
+    positive OmegaFlow authentication (the same ``#view_1874`` check
+    ``CamoufoxPortalReader.verify_authenticated`` relies on -- one
+    definition of "authenticated", not a second one) vs. the employee
+    closing the window first.
+
+    Returns True only once authentication is positively detected -- the
+    caller must then capture session state before the browser closes,
+    which happens right afterward through the application's own bounded
+    teardown, not a further wait for the employee to close it themselves.
+    An early close (before that) returns False: no capture happens, and
+    whatever was previously saved is left untouched.
+    """
+
+    async def _poll_for_login() -> None:
+        while True:
+            with contextlib.suppress(Exception):  # page mid-navigation, or closing -- retry
+                if await is_authenticated_view_present(page):
+                    return
+            await asyncio.sleep(_LOGIN_POLL_INTERVAL_SECONDS)
+
+    login_task = asyncio.create_task(_poll_for_login())
+    close_task = asyncio.create_task(_wait_until_closed(context))
+    try:
+        done, _pending = await asyncio.wait(
+            {login_task, close_task}, return_when=asyncio.FIRST_COMPLETED
+        )
+        return login_task in done
+    finally:
+        for task in (login_task, close_task):
+            if not task.done():
+                task.cancel()
+        for task in (login_task, close_task):
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+
+
+async def _capture_and_save_session_state(context, page, settings: Settings) -> None:
+    """Best-effort: a capture/save failure here must never turn a
+    successful, positively-detected login into a reported failure (the
+    browser still closes normally either way) -- it only means the next
+    connect attempt starts from whatever was saved before, same as if
+    this login had never positively completed at all."""
+    try:
+        origin = origin_of(settings.omegaflow_base_url)
+        state = await capture_session_state(context, page, origin=origin)
+        save_session_state(settings.session_state_path, state)
+    except Exception:  # noqa: BLE001 - logged, never fails the login/close flow
+        logger.exception("échec de la capture de l'état de session OmegaFlow")
+        return
+    local_storage_count = sum(len(o.get("localStorage", [])) for o in state.get("origins", []))
+    session_storage_count = len(state.get("session_storage", {}).get("items", {}))
+    logger.info(
+        "état de session OmegaFlow capturé et enregistré "
+        "cookies=%d local_storage=%d session_storage=%d",
+        len(state.get("cookies", [])),
+        local_storage_count,
+        session_storage_count,
+    )
 
 
 async def run_session_setup(

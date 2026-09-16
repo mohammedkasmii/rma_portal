@@ -43,12 +43,29 @@ from rma_portal.infrastructure.portal.profile_lock import (
     acquire_profile_lock,
     mark_profile_teardown_unconfirmed,
 )
+from rma_portal.infrastructure.portal.session_state import (
+    load_session_state,
+    origin_of,
+    restore_session_state,
+)
 
 logger = logging.getLogger(__name__)
 
 _WRITE_HOST_MARKERS = ("omegaflow.ma", "knack.com")
 _FILTER_TOGGLE_PATTERN = re.compile("ajouter des filtres", re.IGNORECASE)
 _VERIFY_POLL_INTERVAL_MS = 500
+
+AUTHENTICATED_VIEW_SELECTOR = "#view_1874"
+
+
+async def is_authenticated_view_present(page: Any) -> bool:
+    """True once the authenticated queue view has genuinely rendered --
+    not just the absence of a login screen, which an unauthenticated
+    loading shell also satisfies. The one definition of "authenticated"
+    shared by ``verify_authenticated`` below and the login-capture polling
+    in ``session_setup.launch_visible_browser_and_wait``."""
+    view = page.locator(AUTHENTICATED_VIEW_SELECTOR)
+    return await view.count() > 0 and await view.first.is_visible()
 
 
 class CamoufoxPortalReaderFactory:
@@ -63,6 +80,7 @@ class CamoufoxPortalReaderFactory:
         base_url: str,
         procedure_value: str,
         timezone_id: str,
+        session_state_path: Path,
         locale: str = "fr-FR",
         headless: bool = True,
     ) -> None:
@@ -72,6 +90,7 @@ class CamoufoxPortalReaderFactory:
         self._base_url = base_url
         self._procedure_value = procedure_value
         self._timezone_id = timezone_id
+        self._session_state_path = session_state_path
         self._locale = locale
         self._headless = headless
 
@@ -83,6 +102,7 @@ class CamoufoxPortalReaderFactory:
             base_url=self._base_url,
             procedure_value=self._procedure_value,
             timezone_id=self._timezone_id,
+            session_state_path=self._session_state_path,
             locale=self._locale,
             headless=self._headless,
         )
@@ -98,6 +118,7 @@ class CamoufoxPortalReader:
         base_url: str,
         procedure_value: str,
         timezone_id: str,
+        session_state_path: Path,
         locale: str,
         headless: bool,
     ) -> None:
@@ -107,6 +128,7 @@ class CamoufoxPortalReader:
         self._base_url = base_url
         self._procedure_value = procedure_value
         self._timezone_id = timezone_id
+        self._session_state_path = session_state_path
         self._locale = locale
         self._headless = headless
         self._lock_cm = None
@@ -135,6 +157,14 @@ class CamoufoxPortalReader:
             )
             self._context = await self._manager.__aenter__()
             await self._context.route("**/*", self._read_only_route)
+            # Explicit restore before any navigation happens: the
+            # persistent Firefox profile alone does not carry sessionStorage
+            # forward across a process restart (by spec), and OmegaFlow's
+            # own authenticated render depends on it -- see session_state.py.
+            saved_state = load_session_state(self._session_state_path)
+            await restore_session_state(
+                self._context, saved_state, origin=origin_of(self._base_url)
+            )
             self._page = (
                 self._context.pages[0] if self._context.pages else await self._context.new_page()
             )
@@ -342,10 +372,9 @@ class CamoufoxPortalReader:
         """
         page = self._require_page()
         await page.goto(self._start_route, wait_until="domcontentloaded", timeout=30_000)
-        view = page.locator("#view_1874")
         while True:
             await self._assert_authenticated()
-            if await view.count() > 0 and await view.first.is_visible():
+            if await is_authenticated_view_present(page):
                 return
             await page.wait_for_timeout(_VERIFY_POLL_INTERVAL_MS)
 

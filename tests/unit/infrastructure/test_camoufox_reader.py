@@ -28,7 +28,10 @@ LOADING_SHELL_HTML = '<html><body><div id="knack-body">Loading...</div></body></
 LOGIN_FORM_HTML = '<html><body><input type="password"></body></html>'
 
 
-def _make_reader(lock_path: Path = Path("unused-lock-path")) -> CamoufoxPortalReader:
+def _make_reader(
+    lock_path: Path = Path("unused-lock-path"),
+    session_state_path: Path = Path("unused-session-state-path"),
+) -> CamoufoxPortalReader:
     return CamoufoxPortalReader(
         profile_dir=Path("unused-profile-dir"),
         lock_path=lock_path,
@@ -36,6 +39,7 @@ def _make_reader(lock_path: Path = Path("unused-lock-path")) -> CamoufoxPortalRe
         base_url="https://omegaflow.ma/",
         procedure_value=PROCEDURE_VALUE,
         timezone_id="Africa/Casablanca",
+        session_state_path=session_state_path,
         locale="fr-FR",
         headless=True,
     )
