@@ -28,7 +28,9 @@ class ScriptedPoll:
 @dataclass
 class FakePortalReader:
     poll: ScriptedPoll
-    details_by_id: dict[str, DossierDetails | Exception] = field(default_factory=dict)
+    details_by_id: dict[str, DossierDetails | Exception | Callable[[], DossierDetails | Exception]] = field(
+        default_factory=dict
+    )
     lock_held: bool = False
     aenter_exception: Exception | None = None
     read_calls: list[str] = field(default_factory=list)
@@ -58,6 +60,11 @@ class FakePortalReader:
         outcome = self.details_by_id.get(dossier.record_id)
         if outcome is None:
             return DossierDetails(dates=_empty_dates(), detail_complete=True, detail_error=None)
+        if callable(outcome):
+            # Lets a test return a different DossierDetails on each call,
+            # e.g. a closure over an iterator, to simulate a value that only
+            # appears on a later poll (see test_missing_required_quote_date_*).
+            outcome = outcome()
         if isinstance(outcome, Exception):
             raise outcome
         return outcome
@@ -79,7 +86,8 @@ class FakePortalReaderFactory:
     def __init__(
         self,
         polls: list[QueueSnapshot | Exception],
-        details_by_id: dict[str, DossierDetails | Exception] | None = None,
+        details_by_id: dict[str, DossierDetails | Exception | Callable[[], DossierDetails | Exception]]
+        | None = None,
         lock_held: Callable[[], bool] | bool = False,
         aenter_exception: Exception | None = None,
     ) -> None:

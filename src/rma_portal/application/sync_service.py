@@ -246,7 +246,7 @@ class SyncAgreementQueue:
 
             for record_id in result.to_touch:
                 dossier, status_changed = uow.dossiers.touch(account_id, rows_by_id[record_id], now)
-                if status_changed:
+                if status_changed or _missing_required_quote_date(dossier):
                     dossiers_needing_detail[dossier.id] = dossier
 
             for record_id, count in result.absence_increments.items():
@@ -286,6 +286,22 @@ class SyncAgreementQueue:
 
 def _as_portal_ref(dossier: Dossier) -> PortalDossierRef:
     return PortalDossierRef(record_id=dossier.record_id, details_href=dossier.details_href)
+
+
+def _missing_required_quote_date(dossier: Dossier) -> bool:
+    """True while 'Date envoi devis garage' has never been captured.
+
+    This is V1's one *required* detail field (see docs/architecture.md), so
+    an active dossier is refetched on every poll until it appears -- even
+    when detail_complete is already True and portal_status is unchanged,
+    since a prior successful read can legitimately have found it still
+    blank at the garage. The other four detail dates are optional and do
+    NOT get this treatment: retrying every dossier forever merely because
+    an optional date is blank would be pure waste, so they only refresh
+    when portal_status changes (see the `to_touch` loop) or via the normal
+    detail_complete=False retry.
+    """
+    return dossier.dates.date_envoi_devis_garage is None
 
 
 def _failed_details(error: str) -> DossierDetails:

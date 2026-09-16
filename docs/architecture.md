@@ -84,12 +84,24 @@ One poll:
    consecutive absences).
 4. Persists that outcome transactionally per dossier, then fetches detail
    pages for every dossier that is new, reactivated, has a changed
-   `portal_status`, or whose previous detail fetch failed or never ran (a
-   dossier is queued for at most one detail fetch per poll even if it
-   matches more than one of these reasons). A detail failure is recorded on
-   the dossier and retried on the next poll; it never removes the
-   list-level detection or its notification. An unchanged, already-complete
-   dossier is never re-fetched.
+   `portal_status`, is still missing "Date envoi devis garage" (V1's one
+   *required* detail field -- see below), or whose previous detail fetch
+   failed or never ran (a dossier is queued for at most one detail fetch
+   per poll even if it matches more than one of these reasons). A detail
+   failure is recorded on the dossier and retried on the next poll; it
+   never removes the list-level detection or its notification. An
+   unchanged, already-complete dossier whose quote date is already known
+   is never re-fetched.
+
+   "Date envoi devis garage" gets this special treatment -- refetched every
+   poll while blank, even with `portal_status` unchanged and
+   `detail_complete=True` from a prior successful read -- because it is the
+   one field the business actually depends on; a garage legitimately
+   hasn't sent a quote yet is exactly the case where re-checking pays off.
+   The other four (optional) detail dates do **not** get this treatment:
+   retrying every dossier forever merely because an optional date is
+   blank would be pure waste, so they only refresh via a `portal_status`
+   change or the normal failed/never-run retry above.
 5. Records a `poll_runs` row and updates `portal_accounts` (`last_poll_at`,
    `last_success_at` only on `COMPLETE`, `session_status`, `last_error`).
 

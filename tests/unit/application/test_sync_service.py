@@ -380,13 +380,27 @@ async def test_browser_context_launch_failure_finishes_poll_as_failed(
 @pytest.mark.asyncio
 async def test_unchanged_complete_dossier_is_not_fetched_again(uow_factory, portal_account_id):
     row = _row("a")
-    factory = FakePortalReaderFactory(polls=[QueueSnapshot(rows=(row,), pages_seen=1), QueueSnapshot(rows=(row,), pages_seen=1)])
+    # A genuinely complete detail read has its required quote date filled
+    # in -- a blank one would (correctly) keep getting retried regardless
+    # of portal_status, see test_blank_required_quote_date_is_retried_....
+    details = DossierDetails(
+        dates=DossierDates(
+            date_envoi_devis_garage=datetime(2026, 3, 1, tzinfo=UTC),
+            date_envoi_devis_garage_raw="01/03/2026",
+        ),
+        detail_complete=True,
+        detail_error=None,
+    )
+    factory = FakePortalReaderFactory(
+        polls=[QueueSnapshot(rows=(row,), pages_seen=1), QueueSnapshot(rows=(row,), pages_seen=1)],
+        details_by_id={"a": details},
+    )
     sync = SyncAgreementQueue(factory, uow_factory)
 
     await sync.execute()  # baseline: fetches "a" once
     assert factory.readers[0].read_calls == ["a"]
 
-    await sync.execute()  # unchanged row, detail already complete
+    await sync.execute()  # unchanged row, detail already complete and quote date present
     assert factory.readers[1].read_calls == []
 
 
@@ -429,3 +443,52 @@ async def test_missing_detail_value_causes_a_retry(uow_factory, portal_account_i
     with uow_factory() as uow:
         dossier = uow.dossiers.get_by_record_id(portal_account_id, "a")
     assert dossier.detail_complete is True
+
+
+@pytest.mark.asyncio
+async def test_blank_required_quote_date_is_retried_until_populated_then_stops(
+    uow_factory, portal_account_id
+):
+    """Date envoi devis garage is V1's one *required* detail field: an
+    active, unchanged dossier must keep being refetched while it is blank
+    -- even though detail_complete is already True and portal_status never
+    changes -- but must stop as soon as a poll returns a real value."""
+    blank_response = DossierDetails(dates=DossierDates(), detail_complete=True, detail_error=None)
+    populated_response = DossierDetails(
+        dates=DossierDates(
+            date_envoi_devis_garage=datetime(2026, 3, 1, tzinfo=UTC),
+            date_envoi_devis_garage_raw="01/03/2026",
+        ),
+        detail_complete=True,
+        detail_error=None,
+    )
+    responses = iter([blank_response, populated_response])
+
+    row = _row("a")
+    factory = FakePortalReaderFactory(
+        polls=[
+            QueueSnapshot(rows=(row,), pages_seen=1),  # 1. baseline: initial read, blank quote date
+            QueueSnapshot(rows=(row,), pages_seen=1),  # 2. unchanged: must refetch (still blank)
+            QueueSnapshot(rows=(row,), pages_seen=1),  # unchanged poll to observe the populated result
+        ],
+        details_by_id={"a": lambda: next(responses)},
+    )
+    sync = SyncAgreementQueue(factory, uow_factory)
+
+    await sync.execute()
+    assert factory.readers[0].read_calls == ["a"]
+    with uow_factory() as uow:
+        dossier = uow.dossiers.get_by_record_id(portal_account_id, "a")
+    assert dossier.dates.date_envoi_devis_garage is None
+
+    await sync.execute()
+    # Exactly one refetch this poll -- never more than one per dossier per poll.
+    assert factory.readers[1].read_calls == ["a"]
+    with uow_factory() as uow:
+        dossier = uow.dossiers.get_by_record_id(portal_account_id, "a")
+    assert dossier.dates.date_envoi_devis_garage is not None
+    assert dossier.dates.date_envoi_devis_garage_raw == "01/03/2026"
+
+    # 5. A third unchanged poll: the quote date is now present, so no further fetch.
+    await sync.execute()
+    assert factory.readers[2].read_calls == []
