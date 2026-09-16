@@ -547,6 +547,41 @@ async def test_verify_session_times_out_and_leaves_an_actionable_error(uow_facto
 
 
 @pytest.mark.asyncio
+async def test_verify_session_is_not_kept_pending_by_a_stalled_cleanup(
+    uow_factory, portal_account_id
+):
+    """Regression: a verification timeout must be a hard recovery
+    boundary even when cleanup (__aexit__) also stalls afterward.
+
+    Reproduces the exact reported failure: the auth check is still
+    in-flight (not yet resolved) when its own deadline fires -- so
+    cancellation lands *inside* verify_authenticated() -- and browser
+    teardown then hangs on an Event that is never set. With a single
+    wait_for wrapping both the check and a `finally: await
+    __aexit__(...)`, that finally's await is a *fresh* one, started only
+    after the cancellation already landed elsewhere, and previously was
+    never re-cancelled by that same timeout -- so verify_session() stayed
+    pending indefinitely, well past its deadline, only returning once
+    cleanup was released. Startup/check/cleanup must each be bounded by
+    their own independent wait_for so this can never happen."""
+    cleanup_gate = asyncio.Event()  # deliberately never set: cleanup hangs
+    factory = FakePortalReaderFactory(
+        polls=[QueueSnapshot(rows=(), pages_seen=1)],
+        verify_delay_seconds=5.0,  # still in-flight when the 20ms deadline fires
+        aexit_gate=cleanup_gate,
+    )
+    sync = SyncAgreementQueue(factory, uow_factory)
+
+    verified = await asyncio.wait_for(sync.verify_session(0.02), timeout=1.0)
+
+    assert verified is False  # the auth check itself never got to finish
+    with uow_factory() as uow:
+        account = uow.portal_accounts.get(portal_account_id)
+    assert account.session_status.value == "ERROR"
+    assert account.last_error
+
+
+@pytest.mark.asyncio
 async def test_verify_session_does_not_claim_a_full_synchronization_succeeded(
     uow_factory, portal_account_id
 ):

@@ -192,13 +192,28 @@ class SyncAgreementQueue:
         :meth:`execute` to run the normal synchronization afterward.
 
         Reuses the same reader (and therefore the same
-        ``_assert_authenticated``/``detect_auth_required`` logic) that
+        ``_assert_authenticated``/``detect_auth_required`` logic, plus the
+        positive-evidence check in ``verify_authenticated`` itself) that
         :meth:`execute` uses -- there is exactly one implementation of
-        "is OmegaFlow authenticated". Never raises: the boolean return is
-        the only signal callers need, and the account's persisted
-        ``session_status`` is always updated to match (READY,
-        AUTH_REQUIRED, or ERROR on any other failure/timeout) so the
-        dashboard immediately reflects an actionable state either way.
+        "is OmegaFlow authenticated". Never raises for an ordinary
+        failure: the boolean return is the only signal callers need, and
+        the account's persisted ``session_status`` is always updated to
+        match (READY, AUTH_REQUIRED, or ERROR on any other failure/
+        timeout) so the dashboard immediately reflects an actionable state
+        either way.
+
+        Browser startup, the auth check itself, and cleanup are each
+        bounded by their own independent ``timeout_seconds`` wait --
+        deliberately three separate ``asyncio.wait_for`` calls rather than
+        one wrapping all three. A single wrapper let a stall *inside*
+        cleanup (reached via a ``finally: await ...`` after the wrapped
+        coroutine had already been cancelled once) run unbounded: Python
+        only delivers a cancellation at the *current* await point, so a
+        fresh ``await`` started while handling that cancellation is not
+        itself re-cancelled by the same timeout. Cleanup is still always
+        awaited (bounded) rather than abandoned, so the profile lock is
+        never left held past this method returning -- a fresh connect
+        attempt can never race a still-running profile.
         """
         now = datetime.now(UTC)
         with self._uow_factory() as uow:
@@ -213,29 +228,51 @@ class SyncAgreementQueue:
             self._mark_session_checked(account_id, SessionStatus.ERROR, now, str(exc))
             return False
 
-        async def _check() -> None:
-            reader = await reader_cm.__aenter__()
-            try:
-                await reader.verify_authenticated()
-            finally:
-                with contextlib.suppress(Exception):
-                    await reader_cm.__aexit__(None, None, None)
-
+        reader: PortalReader | None = None
         try:
-            await asyncio.wait_for(_check(), timeout=timeout_seconds)
-        except BrowserProfileLockedError as exc:
-            status, error = SessionStatus.ERROR, str(exc)
-        except PortalAuthRequiredError as exc:
-            status, error = SessionStatus.AUTH_REQUIRED, str(exc)
-        except TimeoutError:
-            status, error = (
-                SessionStatus.ERROR,
-                f"Vérification de session interrompue après {timeout_seconds:.0f}s.",
-            )
-        except Exception as exc:  # noqa: BLE001 - any other launch/read failure
-            status, error = SessionStatus.ERROR, _short_error(exc)
-        else:
-            status, error = SessionStatus.READY, None
+            try:
+                reader = await asyncio.wait_for(reader_cm.__aenter__(), timeout=timeout_seconds)
+            except BrowserProfileLockedError as exc:
+                status, error = SessionStatus.ERROR, str(exc)
+            except TimeoutError:
+                status, error = (
+                    SessionStatus.ERROR,
+                    f"Démarrage du navigateur interrompu après {timeout_seconds:.0f}s.",
+                )
+            except Exception as exc:  # noqa: BLE001 - any other launch failure
+                status, error = SessionStatus.ERROR, _short_error(exc)
+            else:
+                assert reader is not None  # this branch only runs when __aenter__ succeeded
+                try:
+                    await asyncio.wait_for(reader.verify_authenticated(), timeout=timeout_seconds)
+                except PortalAuthRequiredError as exc:
+                    status, error = SessionStatus.AUTH_REQUIRED, str(exc)
+                except TimeoutError:
+                    status, error = (
+                        SessionStatus.ERROR,
+                        f"Vérification de session interrompue après {timeout_seconds:.0f}s.",
+                    )
+                except Exception as exc:  # noqa: BLE001 - any other read failure
+                    status, error = SessionStatus.ERROR, _short_error(exc)
+                else:
+                    status, error = SessionStatus.READY, None
+        finally:
+            # Its own bound, independent of the stages above (see the
+            # docstring) -- never skipped just because startup/the auth
+            # check failed, timed out, or the whole method is itself being
+            # cancelled (e.g. app shutdown): Python still runs `finally`,
+            # and this `await` is a fresh one Python does not re-cancel on
+            # its own, so it gets a genuine chance to finish instead of
+            # being silently abandoned mid-teardown.
+            if reader is not None:
+                try:
+                    await asyncio.wait_for(
+                        reader_cm.__aexit__(None, None, None), timeout=timeout_seconds
+                    )
+                except Exception:  # noqa: BLE001 - never let cleanup crash the check
+                    logger.exception(
+                        "échec du nettoyage du navigateur après vérification de session"
+                    )
 
         self._mark_session_checked(account_id, status, now, error)
         return status is SessionStatus.READY

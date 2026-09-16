@@ -10,6 +10,7 @@ for verifying actual DOM/event behaviour against a live OmegaFlow session
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -101,7 +102,14 @@ class FakePage:
         return None
 
     async def wait_for_timeout(self, timeout: float) -> None:
-        return None
+        # A real page genuinely suspends here, giving the event loop a
+        # chance to run other callbacks (e.g. an enclosing asyncio.wait_for
+        # deadline). Yielding via asyncio.sleep(0) keeps a caller that
+        # polls in a loop (e.g. CamoufoxPortalReader.verify_authenticated)
+        # from busy-spinning forever without ever ceding control -- which
+        # would otherwise starve the event loop and defeat any timeout
+        # wrapped around it, without slowing the test down for real.
+        await asyncio.sleep(0)
 
     async def wait_for_function(self, fn: str, arg: Any = None, timeout: float | None = None) -> None:
         return None

@@ -88,12 +88,17 @@ class _FakeContext(_FakeEmitter):
         self.pages = []
         self.emit("close")
 
+    def close_page_without_context_event(self, page: _FakePage) -> None:
+        """Closes one specific page (out of possibly several open at once)
+        without the context itself ever emitting "close"."""
+        self.pages.remove(page)
+        page.emit("close")
+
     def close_last_page_without_context_event(self) -> None:
         """Simulates what was observed live: the browser process/window
         tears down when the employee closes it, the last *page* fires
         "close", but the context's own "close" event never fires."""
-        page = self.pages.pop()
-        page.emit("close")
+        self.close_page_without_context_event(self.pages[-1])
 
     def vanish_silently(self) -> None:
         """No event at all fires (an event-emission quirk); only the
@@ -142,6 +147,36 @@ async def test_wait_until_closed_resolves_when_only_the_last_page_closes():
         asyncio.wait_for(session_setup._wait_until_closed(context), timeout=0.5),
         close_soon(),
     )
+
+
+@pytest.mark.asyncio
+async def test_wait_until_closed_does_not_finish_while_another_page_remains_open():
+    """Regression: with two pages open (e.g. an extra tab the employee
+    opened), closing just one of them must not end the wait -- the old
+    per-page "close" listener resolved unconditionally on ANY page
+    closing, even with ``context.pages`` still non-empty afterward. Only
+    closing the *last* remaining page (or the context itself) may finish."""
+    first_page, second_page = _FakePage(), _FakePage()
+    context = _FakeContext(pages=[first_page, second_page])
+    finished = False
+
+    async def waiter() -> None:
+        nonlocal finished
+        await session_setup._wait_until_closed(context)
+        finished = True
+
+    task = asyncio.create_task(waiter())
+    await asyncio.sleep(0)
+
+    context.close_page_without_context_event(first_page)
+    await asyncio.sleep(0.05)
+    assert context.pages == [second_page]
+    assert finished is False  # a page is still open -- must not have finished
+    assert not task.done()
+
+    context.close_page_without_context_event(second_page)
+    await asyncio.wait_for(task, timeout=0.5)
+    assert finished is True
 
 
 @pytest.mark.asyncio

@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 
 _WRITE_HOST_MARKERS = ("omegaflow.ma", "knack.com")
 _FILTER_TOGGLE_PATTERN = re.compile("ajouter des filtres", re.IGNORECASE)
+_VERIFY_POLL_INTERVAL_MS = 500
 
 
 class CamoufoxPortalReaderFactory:
@@ -306,12 +307,30 @@ class CamoufoxPortalReader:
 
     async def verify_authenticated(self) -> None:
         """Short, read-only check: navigate to the queue's start route and
-        run the exact same auth detection as ``read_agreement_queue`` --
-        without waiting for the view, applying any filter, or paginating.
+        require *positive* evidence the authenticated app actually
+        rendered -- the same ``#view_1874`` container ``read_agreement_queue``
+        waits for, before any filter/pagination/detail work.
+
+        The absence of a login/session-validation screen is not enough on
+        its own: right after navigation, Knack's page is often still just
+        an unauthenticated loading shell (e.g. ``<div id="knack-body">
+        Loading...</div>``), which has neither a login marker nor the
+        rendered view -- treating that as "authenticated" would be a false
+        READY. This polls both conditions (reusing the exact same
+        ``_assert_authenticated``/``detect_auth_required`` logic used
+        everywhere else) until one becomes true; an unresolved loading
+        shell therefore never resolves here and is left to the caller's
+        own bound (``SyncAgreementQueue.verify_session``) to turn into a
+        timeout/ERROR, never a false READY.
         """
         page = self._require_page()
         await page.goto(self._start_route, wait_until="domcontentloaded", timeout=30_000)
-        await self._assert_authenticated()
+        view = page.locator("#view_1874")
+        while True:
+            await self._assert_authenticated()
+            if await view.count() > 0 and await view.first.is_visible():
+                return
+            await page.wait_for_timeout(_VERIFY_POLL_INTERVAL_MS)
 
     async def read_dossier_details(self, dossier: PortalDossierRef) -> DossierDetails:
         page = self._require_page()

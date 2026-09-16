@@ -123,7 +123,9 @@ async def _wait_until_closed(context) -> None:
        hang forever.
     2. The event fires on the last *page* closing rather than (or before)
        the context itself, depending on how the OS/window manager tore the
-       browser process down.
+       browser process down -- but with more than one page open (e.g. an
+       extra tab), closing just one must not end the wait; only the *last*
+       page closing (or the context itself closing) may.
     3. Camoufox/Playwright's "close" event never fires at all (observed
        live) -- a bounded poll of ``context.pages`` is the fallback so this
        can never hang indefinitely on event-emission quirks.
@@ -138,9 +140,16 @@ async def _wait_until_closed(context) -> None:
         if not closed.done():
             closed.set_result(None)
 
+    def _on_page_closed(*_args: object) -> None:
+        # A single page closing (out of possibly several open at once --
+        # e.g. an extra tab the employee opened) must not end the wait: only
+        # finish once no pages remain, or the context itself closes.
+        if _is_context_closed(context):
+            _mark_closed()
+
     def _watch_page(page: object) -> None:
         with contextlib.suppress(Exception):
-            page.on("close", lambda *_args: _mark_closed())
+            page.on("close", _on_page_closed)
 
     with contextlib.suppress(Exception):
         context.on("close", _mark_closed)

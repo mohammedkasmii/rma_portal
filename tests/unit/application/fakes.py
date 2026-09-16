@@ -34,6 +34,7 @@ class FakePortalReader:
     lock_held: bool = False
     aenter_exception: Exception | None = None
     verify_delay_seconds: float = 0.0
+    aexit_gate: asyncio.Event | None = None
     read_calls: list[str] = field(default_factory=list)
 
     async def __aenter__(self) -> FakePortalReader:
@@ -49,7 +50,11 @@ class FakePortalReader:
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
-        return None
+        # `aexit_gate` lets a test simulate a stalled browser
+        # teardown -- exercises SyncAgreementQueue.verify_session's own
+        # (separate) bound on cleanup.
+        if self.aexit_gate is not None:
+            await self.aexit_gate.wait()
 
     async def read_agreement_queue(self) -> QueueSnapshot:
         if isinstance(self.poll.result, Exception):
@@ -103,12 +108,14 @@ class FakePortalReaderFactory:
         lock_held: Callable[[], bool] | bool = False,
         aenter_exception: Exception | None = None,
         verify_delay_seconds: float = 0.0,
+        aexit_gate: asyncio.Event | None = None,
     ) -> None:
         self._polls = list(polls)
         self._details_by_id = details_by_id or {}
         self._lock_held = lock_held
         self._aenter_exception = aenter_exception
         self._verify_delay_seconds = verify_delay_seconds
+        self._aexit_gate = aexit_gate
         self.readers: list[FakePortalReader] = []
 
     def open(self) -> FakePortalReader:
@@ -120,6 +127,7 @@ class FakePortalReaderFactory:
             lock_held=held,
             aenter_exception=self._aenter_exception,
             verify_delay_seconds=self._verify_delay_seconds,
+            aexit_gate=self._aexit_gate,
         )
         self.readers.append(reader)
         return reader

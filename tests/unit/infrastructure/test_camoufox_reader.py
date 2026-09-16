@@ -9,11 +9,13 @@ docs/omegaflow-contract.md for what still needs live-session confirmation.
 
 from __future__ import annotations
 
+import asyncio
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
-from rma_portal.application.dto import PortalReadError
+from rma_portal.application.dto import PortalAuthRequiredError, PortalReadError
 from rma_portal.config import Settings
 from rma_portal.infrastructure.portal.camoufox_reader import CamoufoxPortalReader
 from tests.unit.infrastructure.fake_playwright import FakePage
@@ -22,6 +24,8 @@ PROCEDURE_VALUE = "5ed644a2faf17c0015d8c367"
 START_ROUTE = Settings().omegaflow_start_route
 
 ZERO_ROW_HTML = '<html><body><div id="view_1874"><table><tbody></tbody></table></div></body></html>'
+LOADING_SHELL_HTML = '<html><body><div id="knack-body">Loading...</div></body></html>'
+LOGIN_FORM_HTML = '<html><body><input type="password"></body></html>'
 
 
 def _make_reader() -> CamoufoxPortalReader:
@@ -117,3 +121,95 @@ async def test_read_agreement_queue_never_waits_for_a_row_to_exist():
     assert not any(
         "table tbody tr" in selector for selector, _state, _timeout in page.wait_for_calls
     )
+
+
+def _rendered_view_page(content_html: str) -> FakePage:
+    """A page where the authenticated queue view (#view_1874) is already
+    visible -- positive evidence, as opposed to just an absent login form."""
+    return FakePage(content_html=content_html, counts={"#view_1874": 1}, visible={"#view_1874"})
+
+
+@dataclass
+class _EventuallyRendersTheView(FakePage):
+    """Starts as a loading shell; #view_1874 becomes visible after
+    ``polls_before_visible`` calls to ``wait_for_timeout`` (i.e. poll
+    iterations of ``verify_authenticated``)."""
+
+    polls_before_visible: int = 0
+
+    async def wait_for_timeout(self, timeout: float) -> None:
+        self.polls_before_visible -= 1
+        if self.polls_before_visible <= 0:
+            self.counts["#view_1874"] = 1
+            self.visible.add("#view_1874")
+
+
+@dataclass
+class _EventuallyShowsALoginForm(FakePage):
+    """Starts as a loading shell; a login form appears after
+    ``polls_before_login`` poll iterations."""
+
+    polls_before_login: int = 0
+
+    async def wait_for_timeout(self, timeout: float) -> None:
+        self.polls_before_login -= 1
+        if self.polls_before_login <= 0:
+            self.content_html = LOGIN_FORM_HTML
+
+
+@pytest.mark.asyncio
+async def test_verify_authenticated_never_resolves_a_perpetual_loading_shell():
+    """Regression: an unauthenticated loading shell (neither a login
+    marker nor the rendered queue view) must never be treated as
+    authenticated -- verify_authenticated must stay pending, not return
+    normally, so the caller's own bound (not this method) is what turns it
+    into ERROR/timeout. If it returned normally here, that would be a
+    false READY."""
+    reader = _make_reader()
+    reader._page = FakePage(content_html=LOADING_SHELL_HTML)
+
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(reader.verify_authenticated(), timeout=0.2)
+
+
+@pytest.mark.asyncio
+async def test_verify_authenticated_succeeds_once_the_queue_view_actually_renders():
+    reader = _make_reader()
+    reader._page = _EventuallyRendersTheView(
+        content_html=LOADING_SHELL_HTML, polls_before_visible=3
+    )
+
+    await asyncio.wait_for(reader.verify_authenticated(), timeout=1.0)  # must not raise/time out
+
+
+@pytest.mark.asyncio
+async def test_verify_authenticated_raises_immediately_for_an_already_visible_login_form():
+    reader = _make_reader()
+    reader._page = FakePage(content_html=LOGIN_FORM_HTML)
+
+    with pytest.raises(PortalAuthRequiredError):
+        await asyncio.wait_for(reader.verify_authenticated(), timeout=0.2)
+
+
+@pytest.mark.asyncio
+async def test_verify_authenticated_keeps_checking_for_a_login_form_while_waiting():
+    """Regression: a login form that only appears after the shell has been
+    polling for a while must still be caught, not missed because the
+    first check already passed."""
+    reader = _make_reader()
+    reader._page = _EventuallyShowsALoginForm(content_html=LOADING_SHELL_HTML, polls_before_login=2)
+
+    with pytest.raises(PortalAuthRequiredError):
+        await asyncio.wait_for(reader.verify_authenticated(), timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_verify_authenticated_never_applies_the_filter_or_paginates():
+    reader = _make_reader()
+    page = _rendered_view_page(ZERO_ROW_HTML)
+    reader._page = page
+
+    await reader.verify_authenticated()
+
+    assert page.select_option_calls == []
+    assert page.clicked == []
