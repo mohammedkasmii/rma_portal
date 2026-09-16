@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Portail RMA{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/vendor/htmx.min.js" defer></script>
+</head>
+<body>
+  {% if user %}
+  <header class="topbar">
+    <div class="topbar-brand">Portail RMA</div>
+    <nav class="topbar-nav">
+      <a href="/">Tableau de bord</a>
+      {% if user.role.value == "ADMIN" %}
+        <a href="/admin/users">Utilisateurs</a>
+        <a href="/admin/session">Session OmegaFlow</a>
+      {% endif %}
+    </nav>
+    <div class="topbar-user">
+      <span>{{ user.display_name }}</span>
+      <form method="post" action="/logout" style="display:inline">
+        <button type="submit" class="link-button">Se déconnecter</button>
+      </form>
+    </div>
+  </header>
+  {% endif %}
+  <main class="page">
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

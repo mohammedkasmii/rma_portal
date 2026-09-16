@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Connexion — Portail RMA{% endblock %}
+{% block content %}
+<div class="login-box">
+  <h1>Portail RMA</h1>
+  <p class="muted">Connectez-vous avec votre compte local de l'agence.</p>
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  <form method="post" action="/login">
+    <label for="username">Identifiant</label>
+    <input id="username" name="username" type="text" autocomplete="username" required autofocus>
+    <label for="password">Mot de passe</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required>
+    <button type="submit">Se connecter</button>
+  </form>
+</div>
+{% endblock %}

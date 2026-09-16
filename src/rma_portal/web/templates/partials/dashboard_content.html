@@ -1,0 +1,106 @@
+<div id="dashboard-content"
+     hx-get="/"
+     hx-trigger="every 30s"
+     hx-include="#filters"
+     hx-select="#dashboard-content"
+     hx-swap="outerHTML">
+
+  {% if portal_account and portal_account.session_status.value == "AUTH_REQUIRED" %}
+  <div class="banner banner-warning">
+    La session OmegaFlow doit être reconnectée. Lancez
+    <strong>Configurer_Session_RMA.bat</strong> sur le serveur, puis reconnectez-vous
+    manuellement au portail OmegaFlow.
+  </div>
+  {% elif portal_account and portal_account.session_status.value == "ERROR" %}
+  <div class="banner banner-warning">
+    La dernière synchronisation a échoué{% if portal_account.last_error %} : {{ portal_account.last_error }}{% endif %}.
+    Les données affichées sont celles de la dernière synchronisation réussie.
+  </div>
+  {% endif %}
+
+  <div class="dashboard-toolbar">
+    <div class="last-refresh">
+      {% if portal_account and portal_account.last_success_at %}
+        Dernière synchronisation réussie : {{ portal_account.last_success_at.strftime("%d/%m/%Y %H:%M") }}
+      {% else %}
+        Aucune synchronisation réussie pour le moment.
+      {% endif %}
+    </div>
+    <button
+      hx-post="/refresh"
+      hx-include="#filters"
+      hx-target="#dashboard-content"
+      hx-swap="outerHTML"
+      class="primary">
+      Actualiser maintenant
+    </button>
+  </div>
+
+  <div class="counts">
+    <div class="count-card"><span class="count-value">{{ counts.new_for_me }}</span><span>Nouveaux pour moi</span></div>
+    <div class="count-card"><span class="count-value">{{ counts.to_do }}</span><span>À traiter</span></div>
+    <div class="count-card"><span class="count-value">{{ counts.in_progress }}</span><span>En cours</span></div>
+    <div class="count-card"><span class="count-value">{{ counts.waiting }}</span><span>En attente</span></div>
+    <div class="count-card"><span class="count-value">{{ counts.done }}</span><span>Terminés</span></div>
+  </div>
+
+  <form id="filters"
+        hx-get="/"
+        hx-target="#dashboard-content"
+        hx-swap="outerHTML"
+        hx-trigger="change, keyup delay:400ms from:input[name='search']"
+        class="filters">
+    <input type="text" name="search" placeholder="N° dossier, nom, immatriculation, garage"
+           value="{{ filters.search or '' }}">
+    <label><input type="checkbox" name="unread_only" value="1" {% if filters.unread_only %}checked{% endif %}> Non lus uniquement</label>
+    <select name="work_status">
+      <option value="">Tous les statuts</option>
+      {% for value, label in work_status_options %}
+        <option value="{{ value }}" {% if filters.work_status == value %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+    <select name="portal_status">
+      <option value="">Tous les statuts OmegaFlow</option>
+      {% for value in portal_status_options %}
+        <option value="{{ value }}" {% if filters.portal_status == value %}selected{% endif %}>{{ value }}</option>
+      {% endfor %}
+    </select>
+  </form>
+
+  <table class="dossier-table">
+    <thead>
+      <tr>
+        <th></th>
+        <th>Dossier</th>
+        <th>Nom</th>
+        <th>Immatriculation</th>
+        <th>Garage</th>
+        <th>Statut OmegaFlow</th>
+        <th>Date envoi devis garage</th>
+        <th>Fin de travaux prévue</th>
+        <th>Détection</th>
+        <th>Statut de traitement</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr class="{% if row.unread %}row-unread{% endif %}">
+        <td>{% if row.unread %}<span class="badge-new">Nouveau</span>{% endif %}</td>
+        <td>{{ row.dossier_number }}</td>
+        <td>{{ row.insured_name }}</td>
+        <td>{{ row.registration }}</td>
+        <td>{{ row.garage }}</td>
+        <td>{{ row.portal_status }}</td>
+        <td class="highlight">{{ row.date_envoi_devis_garage_raw }}</td>
+        <td>{{ row.date_fin_travaux_prevue_raw }}</td>
+        <td>{{ row.detection_time.strftime("%d/%m/%Y %H:%M") }}</td>
+        <td>{{ work_status_labels[row.work_status] }}</td>
+        <td><a href="/dossiers/{{ row.dossier_id }}">Détails</a></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="11" class="muted">Aucun dossier ne correspond aux filtres actuels.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>

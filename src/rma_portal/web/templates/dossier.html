@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Dossier {{ dossier.dossier_number }} — Portail RMA{% endblock %}
+{% block content %}
+<a href="/">&larr; Retour au tableau de bord</a>
+<h1>Dossier {{ dossier.dossier_number }}</h1>
+
+<section class="dossier-summary">
+  <dl>
+    <dt>Assuré</dt><dd>{{ dossier.insured_name }}</dd>
+    <dt>Immatriculation</dt><dd>{{ dossier.registration }}</dd>
+    <dt>Garage</dt><dd>{{ dossier.garage }}</dd>
+    <dt>Procédure</dt><dd>{{ dossier.procedure }}</dd>
+    <dt>Statut OmegaFlow</dt><dd>{{ dossier.portal_status }}</dd>
+    <dt>Ville</dt><dd>{{ dossier.city }}</dd>
+    <dt>Montant estimé</dt><dd>{{ dossier.estimate_amount_raw }}</dd>
+    <dt>Nombre d'observations</dt><dd>{{ dossier.observation_count }}</dd>
+    <dt>Login accord</dt><dd>{{ dossier.agreement_login }}</dd>
+  </dl>
+  <a class="primary" href="{{ omegaflow_details_url }}" target="_blank" rel="noopener">
+    Ouvrir la fiche OmegaFlow d'origine
+  </a>
+</section>
+
+<section class="dossier-dates">
+  <h2>Dates</h2>
+  <dl>
+    <dt class="highlight">Date envoi devis garage</dt>
+    <dd class="highlight">{{ dossier.dates.date_envoi_devis_garage_raw or "—" }}</dd>
+    <dt>Date création</dt><dd>{{ dossier.dates.date_creation_raw or "—" }}</dd>
+    <dt>Première date de fin prévue</dt><dd>{{ dossier.dates.date_premiere_fin_prevue_raw or "—" }}</dd>
+    <dt>Date fin de travaux prévue</dt><dd>{{ dossier.dates.date_fin_travaux_prevue_raw or "—" }}</dd>
+    <dt>Date photos avant</dt><dd>{{ dossier.dates.date_photos_avant_raw or "—" }}</dd>
+  </dl>
+  {% if dossier.detail_error %}
+  <p class="error">Détail OmegaFlow incomplet : {{ dossier.detail_error }} (nouvelle tentative automatique).</p>
+  {% endif %}
+</section>
+
+<section class="dossier-work">
+  <h2>Statut de traitement (partagé)</h2>
+  <form hx-post="/dossiers/{{ dossier.id }}/status" hx-target="#work-status-feedback" hx-swap="innerHTML">
+    <input type="hidden" name="expected_version" value="{{ work.version if work else '' }}">
+    <select name="status">
+      {% for value, label in work_status_options %}
+        <option value="{{ value }}" {% if work and work.status.value == value %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit" class="primary">Mettre à jour</button>
+  </form>
+  <div id="work-status-feedback"></div>
+</section>
+
+<section class="dossier-notes">
+  <h2>Notes partagées</h2>
+  <ul class="notes-list">
+    {% for note in notes %}
+    <li><span class="note-meta">{{ note.created_at.strftime("%d/%m/%Y %H:%M") }}</span><p>{{ note.body }}</p></li>
+    {% else %}
+    <li class="muted">Aucune note pour le moment.</li>
+    {% endfor %}
+  </ul>
+  <form method="post" action="/dossiers/{{ dossier.id }}/notes">
+    <textarea name="body" maxlength="2000" rows="3" placeholder="Ajouter une note..." required></textarea>
+    <button type="submit" class="primary">Ajouter la note</button>
+  </form>
+</section>
+{% endblock %}

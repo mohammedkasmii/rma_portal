@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Utilisateurs — Portail RMA{% endblock %}
+{% block content %}
+<h1>Utilisateurs</h1>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+{% if message %}<p class="success">{{ message }}</p>{% endif %}
+
+<table class="dossier-table">
+  <thead><tr><th>Identifiant</th><th>Nom affiché</th><th>Rôle</th><th>Statut</th><th></th></tr></thead>
+  <tbody>
+    {% for u in users %}
+    <tr>
+      <td>{{ u.username }}</td>
+      <td>{{ u.display_name }}</td>
+      <td>{{ u.role.value }}</td>
+      <td>{{ "Actif" if u.active else "Désactivé" }}</td>
+      <td class="row-actions">
+        <form method="post" action="/admin/users/{{ u.id }}/toggle-active" style="display:inline">
+          <input type="hidden" name="active" value="{{ 0 if u.active else 1 }}">
+          <button type="submit" class="link-button">{{ "Désactiver" if u.active else "Activer" }}</button>
+        </form>
+        <form method="post" action="/admin/users/{{ u.id }}/reset-password" style="display:inline">
+          <input type="password" name="new_password" placeholder="Nouveau mot de passe" minlength="10" required>
+          <button type="submit" class="link-button">Réinitialiser</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<h2>Créer un utilisateur</h2>
+<form method="post" action="/admin/users" class="user-form">
+  <label>Identifiant<input type="text" name="username" required></label>
+  <label>Nom affiché<input type="text" name="display_name" required></label>
+  <label>Mot de passe<input type="password" name="password" minlength="10" required></label>
+  <label>Rôle
+    <select name="role">
+      <option value="EMPLOYEE">Employé</option>
+      <option value="ADMIN">Administrateur</option>
+    </select>
+  </label>
+  <button type="submit" class="primary">Créer</button>
+</form>
+{% endblock %}

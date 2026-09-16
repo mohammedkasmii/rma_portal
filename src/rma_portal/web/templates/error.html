@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}Erreur — Portail RMA{% endblock %}
+{% block content %}
+<h1>{{ title or "Une erreur est survenue" }}</h1>
+<p class="error">{{ message }}</p>
+<a href="/">Retour au tableau de bord</a>
+{% endblock %}
