@@ -47,19 +47,59 @@ whose path contains `/records`, and it never clicks a submit, validation,
 agreement or upload control. See section 7 of the original product spec and
 `docs/omegaflow-contract.md` for the exact contract.
 
-Authentication is established out-of-band: `Configurer_Session_RMA.bat`
-opens a **visible** persistent Camoufox profile so an administrator can log
-in and pass session validation by hand. The application never reads,
-requests or stores the OmegaFlow password — only the resulting browser
-profile (cookies/local storage inside Firefox's own profile directory)
-persists, under `%LOCALAPPDATA%\RMAPortal\browser-profile`.
+Authentication is established out-of-band, in a **visible** persistent
+Camoufox profile, so an employee can log in and pass session validation by
+hand. The application never reads, requests or stores the OmegaFlow
+password — only the resulting browser profile (cookies/local storage inside
+Firefox's own profile directory) persists, under
+`%LOCALAPPDATA%\RMAPortal\browser-profile`.
 
-Both the poller and the session-configuration script acquire the same
-cross-process file lock (`infrastructure/portal/profile_lock.py`) before
-touching that profile directory, so a scheduled poll safely skips (instead
-of racing or crashing) while an administrator is configuring the session,
-and a manual refresh can never run concurrently with the scheduled poll
-(`SyncAgreementQueue` also serializes itself in-process — see below).
+**Normal workflow**: the "Se connecter"/"Reconnecter" button on the
+dashboard (`POST /session/connect`, any authenticated local user — this is
+deliberately not an admin-only action) starts
+`infrastructure.portal.session_connector.SessionConnector` as a background
+asyncio task of the running application. It opens the same visible profile
+`session_setup.launch_visible_browser_and_wait` uses, and when the employee
+closes the window, it immediately calls `SyncAgreementQueue.execute()` — the
+*same* sync the scheduler and manual refresh use, so OmegaFlow
+authentication is detected in exactly one place. This means closing the
+window without having logged in correctly yields `AUTH_REQUIRED`, not
+`READY` — nothing marks the session "connected" other than the same reader
+that also drives every scheduled poll. The visible browser window opens on
+whichever machine is running the RMA Portal server, not on the employee's
+own PC if they differ — in the typical single-PC agency deployment this is
+the same machine, but this limitation means the server host must have an
+interactive desktop session for the window to actually appear (a headless
+server/Windows service with no logged-in desktop cannot show it; **requires
+live validation** on the target deployment).
+
+**Fallback workflow**: `Configurer_Session_RMA.bat` (`session_setup.py`,
+still installed and working) runs the same
+`launch_visible_browser_and_wait` from a blocking console command instead of
+a background task — useful when no employee is at the dashboard (initial
+setup, or a remote console session with no browser to click through).
+
+Only one visible window may exist at a time. The poller, the in-app
+connector and the `.bat` fallback all acquire the same cross-process file
+lock (`infrastructure/portal/profile_lock.py`) before touching the profile
+directory: whichever already holds it wins, and every other caller skips
+safely (the scheduler and manual refresh) or refuses to open a second window
+(a duplicate click on "Se connecter" while one is already open is a no-op,
+not a second browser). `SessionConnector` releases the lock *before* calling
+`SyncAgreementQueue.execute()`, since that call reacquires the same lock
+through its own reader (see "Failure handling" below for what happens if the
+lock can't be acquired at all, or the browser fails to launch).
+Application shutdown cancels an active connector task, which safely closes
+the browser context via Python's normal `async with`/`try`/`finally`
+cleanup and releases the lock.
+
+The dashboard's OmegaFlow session card shows one of `UNKNOWN` ("Session non
+vérifiée"), `CONNECTING` (a window is currently open — a purely in-process
+fact, `SessionConnector.is_active`, never persisted), or the persisted
+`SessionStatus` (`READY`/`AUTH_REQUIRED`/`ERROR`). The dashboard's existing
+30-second HTMX poll (`hx-trigger="every 30s"` on `#dashboard-content`)
+already re-renders the whole fragment, including this card and the warning
+banner, so no separate polling loop was added for it.
 
 ## Synchronization lifecycle
 

@@ -5,18 +5,31 @@
      hx-select="#dashboard-content"
      hx-swap="outerHTML">
 
-  {% if portal_account and portal_account.session_status.value == "AUTH_REQUIRED" %}
-  <div class="banner banner-warning">
-    La session OmegaFlow doit être reconnectée. Lancez
-    <strong>Configurer_Session_RMA.bat</strong> sur le serveur, puis reconnectez-vous
-    manuellement au portail OmegaFlow.
+  {% if session.state == "CONNECTING" %}
+  <div class="banner banner-info">
+    Fenêtre de connexion OmegaFlow ouverte sur l'ordinateur du portail.
+    Connectez-vous, validez la session si demandé, puis fermez la fenêtre.
   </div>
-  {% elif portal_account and portal_account.session_status.value == "ERROR" %}
+  {% elif session.state == "AUTH_REQUIRED" %}
   <div class="banner banner-warning">
-    La dernière synchronisation a échoué{% if portal_account.last_error %} : {{ portal_account.last_error }}{% endif %}.
-    Les données affichées sont celles de la dernière synchronisation réussie.
+    <span>Votre session OmegaFlow a expiré. Cliquez sur Reconnecter.</span>
+    <button class="primary" hx-post="/session/connect" hx-target="#session-card" hx-swap="outerHTML">
+      Reconnecter
+    </button>
+  </div>
+  {% elif session.state == "ERROR" %}
+  <div class="banner banner-warning">
+    <span>
+      La dernière synchronisation a échoué{% if session.last_error %} : {{ session.last_error }}{% endif %}.
+      Les données affichées sont celles de la dernière synchronisation réussie.
+    </span>
+    <button class="primary" hx-post="/session/connect" hx-target="#session-card" hx-swap="outerHTML">
+      Réessayer
+    </button>
   </div>
   {% endif %}
+
+  {% include "partials/session_card.html" %}
 
   <div class="dashboard-toolbar">
     <div class="last-refresh">

@@ -57,10 +57,39 @@ button, .primary {
   font-size: 0.9rem;
 }
 button:hover, .primary:hover { opacity: 0.9; }
+button:disabled { opacity: 0.6; cursor: not-allowed; }
+.secondary, button.secondary {
+  background: white;
+  color: var(--primary);
+  border: 1px solid var(--primary);
+}
 .link-button { background: none; border: none; color: var(--primary); text-decoration: underline; padding: 0; font-size: 0.85rem; }
 
-.banner { padding: 0.75rem 1rem; border-radius: 6px; margin-bottom: 1rem; }
+.banner {
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+  margin-bottom: 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
 .banner-warning { background: var(--warning-bg); border: 1px solid var(--warning-border); }
+.banner-info { background: #e7f1fb; border: 1px solid #b8d4f0; }
+
+.session-card {
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+  margin-bottom: 1rem;
+}
+.session-card h2 { margin: 0 0 0.5rem 0; font-size: 1rem; }
+.session-state { font-weight: 700; margin: 0 0 0.5rem 0; }
+.session-state.success { color: var(--success); }
+.session-state.error { color: var(--error); }
+.small { font-size: 0.8rem; }
 
 .dashboard-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
 .last-refresh { font-size: 0.85rem; color: #555; }

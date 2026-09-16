@@ -18,6 +18,7 @@ from rma_portal.infrastructure.db.models import Base
 from rma_portal.infrastructure.db.session import create_engine_for, create_session_factory
 from rma_portal.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWorkFactory
 from rma_portal.infrastructure.portal.camoufox_reader import CamoufoxPortalReaderFactory
+from rma_portal.infrastructure.portal.session_connector import SessionConnector
 from rma_portal.infrastructure.security.password_hasher import Argon2PasswordHasher
 
 
@@ -29,6 +30,7 @@ class Application:
     sync_service: SyncAgreementQueue
     account_service: AccountService
     dossier_service: DossierService
+    session_connector: SessionConnector
 
 
 def build_application(settings: Settings | None = None) -> Application:
@@ -55,6 +57,11 @@ def build_application(settings: Settings | None = None) -> Application:
     password_hasher = Argon2PasswordHasher()
     account_service = AccountService(uow_factory, password_hasher)
     dossier_service = DossierService(uow_factory)
+    # Verifies the session immediately after the employee closes the login
+    # window, reusing the same SyncAgreementQueue/CamoufoxPortalReader the
+    # scheduler and manual refresh already use -- no second implementation
+    # of OmegaFlow authentication detection.
+    session_connector = SessionConnector(settings, on_closed=sync_service.execute)
 
     return Application(
         settings=settings,
@@ -63,6 +70,7 @@ def build_application(settings: Settings | None = None) -> Application:
         sync_service=sync_service,
         account_service=account_service,
         dossier_service=dossier_service,
+        session_connector=session_connector,
     )
 
 

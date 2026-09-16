@@ -10,6 +10,7 @@ from rma_portal.domain.enums import WorkStatus
 from rma_portal.domain.models import User
 from rma_portal.web.deps import check_same_origin, get_application, require_user
 from rma_portal.web.routes.auth import get_templates
+from rma_portal.web.session_view import build_session_view
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,7 @@ def _render_dashboard(request, template_name: str, app: Application, user: User)
         work_status=work_status,
         portal_status=portal_status,
     )
+    session = build_session_view(app, portal_account)
 
     return templates.TemplateResponse(
         request,
@@ -53,6 +55,7 @@ def _render_dashboard(request, template_name: str, app: Application, user: User)
             "rows": rows,
             "counts": counts,
             "portal_account": portal_account,
+            "session": session,
             "filters": {
                 "search": search,
                 "unread_only": unread_only,

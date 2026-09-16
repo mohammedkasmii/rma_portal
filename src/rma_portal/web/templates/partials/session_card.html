@@ -1,0 +1,39 @@
+<div id="session-card" class="session-card">
+  <h2>Session OmegaFlow</h2>
+
+  {% if session.state == "UNKNOWN" %}
+    <p class="session-state">Session non vérifiée</p>
+    <button class="primary" hx-post="/session/connect" hx-target="#session-card" hx-swap="outerHTML">
+      Se connecter
+    </button>
+  {% elif session.state == "CONNECTING" %}
+    <p class="session-state">Fenêtre de connexion ouverte</p>
+    <button class="primary" type="button" disabled>Connexion en cours…</button>
+  {% elif session.state == "READY" %}
+    <p class="session-state success">Session active</p>
+    <button class="secondary" hx-post="/session/connect" hx-target="#session-card" hx-swap="outerHTML">
+      Reconnecter
+    </button>
+  {% elif session.state == "AUTH_REQUIRED" %}
+    <p class="session-state error">Session expirée</p>
+    <button class="primary" hx-post="/session/connect" hx-target="#session-card" hx-swap="outerHTML">
+      Reconnecter
+    </button>
+  {% elif session.state == "ERROR" %}
+    <p class="session-state error">{{ session.last_error or "Erreur technique lors de la dernière synchronisation." }}</p>
+    <button class="primary" hx-post="/session/connect" hx-target="#session-card" hx-swap="outerHTML">
+      Réessayer
+    </button>
+  {% endif %}
+
+  <p class="muted small">
+    Dernière vérification :
+    {{ session.last_poll_at.strftime("%d/%m/%Y %H:%M") if session.last_poll_at else "jamais" }}
+    · Dernière synchronisation réussie :
+    {{ session.last_success_at.strftime("%d/%m/%Y %H:%M") if session.last_success_at else "jamais" }}
+  </p>
+  <p class="muted small">
+    La fenêtre de connexion OmegaFlow s'ouvre sur l'ordinateur qui exécute le Portail RMA,
+    pas sur votre poste.
+  </p>
+</div>

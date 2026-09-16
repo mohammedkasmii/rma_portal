@@ -18,7 +18,15 @@ from fastapi.templating import Jinja2Templates
 from rma_portal.bootstrap import Application, build_application
 from rma_portal.infrastructure.scheduler.poller import PollScheduler
 from rma_portal.infrastructure.security.sessions import SessionCodec
-from rma_portal.web.routes import admin_session, admin_users, auth, dashboard, dossier, health
+from rma_portal.web.routes import (
+    admin_session,
+    admin_users,
+    auth,
+    dashboard,
+    dossier,
+    health,
+    session,
+)
 
 _WEB_DIR = Path(__file__).parent
 
@@ -36,6 +44,7 @@ def create_app(application: Application | None = None) -> FastAPI:
             yield
         finally:
             await scheduler.stop()
+            await application.session_connector.shutdown()
 
     app = FastAPI(title="Portail RMA", lifespan=lifespan)
     app.state.application = application
@@ -51,5 +60,6 @@ def create_app(application: Application | None = None) -> FastAPI:
     app.include_router(dossier.router)
     app.include_router(admin_users.router)
     app.include_router(admin_session.router)
+    app.include_router(session.router)
 
     return app

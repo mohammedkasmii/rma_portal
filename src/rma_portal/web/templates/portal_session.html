@@ -16,15 +16,19 @@
 </dl>
 {% if account.session_status.value == "AUTH_REQUIRED" %}
 <p class="banner banner-warning">
-  Reconnexion requise. Sur le serveur, exécutez <strong>Configurer_Session_RMA.bat</strong>
-  et connectez-vous manuellement au compte OmegaFlow partagé de l'agence.
+  Reconnexion requise. Utilisez le bouton « Reconnecter » sur le tableau de bord.
 </p>
 {% endif %}
 {% else %}
 <p class="error">Aucun compte OmegaFlow configuré.</p>
 {% endif %}
 <p class="muted">
-  Cette page est en lecture seule : la configuration de session se fait exclusivement via
-  Configurer_Session_RMA.bat sur le serveur, jamais depuis le navigateur.
+  Le moyen normal de (re)connecter la session OmegaFlow est le bouton
+  « Se connecter »/« Reconnecter » sur le tableau de bord, accessible à tout
+  employé connecté : il ouvre le même navigateur visible sur l'ordinateur qui
+  exécute le Portail RMA. <strong>Configurer_Session_RMA.bat</strong> reste
+  disponible comme outil de secours (par exemple depuis une session bureau à
+  distance sans employé devant le tableau de bord), mais n'est plus le
+  fonctionnement normal.
 </p>
 {% endblock %}

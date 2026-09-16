@@ -54,20 +54,34 @@ Renseignez un identifiant, un nom affiché et un mot de passe (10 caractères
 minimum). Vous pourrez ensuite créer les autres comptes employés depuis la
 page **Utilisateurs** du portail, une fois connecté en tant qu'administrateur.
 
-## Configurer la session OmegaFlow
+## Connecter la session OmegaFlow
 
-Double-cliquez sur `Configurer_Session_RMA.bat`. Un navigateur s'ouvre :
+**Fonctionnement normal :** sur le tableau de bord, la carte « Session
+OmegaFlow » affiche un bouton **Se connecter** (ou **Reconnecter** si la
+session a expiré). Tout employé connecté au portail peut cliquer dessus,
+pas seulement un administrateur.
 
-1. Connectez-vous manuellement avec le compte OmegaFlow partagé de l'agence.
-2. Validez la session si OmegaFlow le demande.
-3. Fermez la fenêtre du navigateur une fois connecté.
+1. Cliquez sur **Se connecter** / **Reconnecter**.
+2. Un navigateur s'ouvre **sur l'ordinateur qui exécute le Portail RMA**
+   (pas forcément votre poste, si le portail tourne sur un autre PC).
+3. Connectez-vous manuellement avec le compte OmegaFlow partagé de
+   l'agence, et validez la session si OmegaFlow le demande.
+4. Fermez la fenêtre du navigateur. Le portail vérifie immédiatement la
+   session (sans attendre les 5 minutes) et met à jour la carte : **Session
+   active** si la connexion a réussi, **Session expirée** sinon.
 
 Le mot de passe OmegaFlow **n'est jamais demandé ni enregistré** par cette
 application : seule la session du navigateur (profil persistant) est
-conservée localement, dans `%LOCALAPPDATA%\RMAPortal\browser-profile`.
+conservée localement, dans `%LOCALAPPDATA%\RMAPortal\browser-profile`. Une
+seule fenêtre de connexion peut être ouverte à la fois ; un second clic
+pendant qu'une fenêtre est déjà ouverte n'en ouvre pas une deuxième.
 
-Cette étape doit être répétée si le bandeau du tableau de bord indique que la
-session doit être reconnectée.
+**Outil de secours :** `Configurer_Session_RMA.bat` fait la même chose
+depuis une invite de commande sur le serveur (utile en l'absence
+d'employé devant le tableau de bord, par exemple lors de l'installation
+initiale ou depuis une session bureau à distance). Ce n'est plus le
+fonctionnement normal, mais il reste disponible et fonctionne à
+l'identique.
 
 ## Démarrer le portail
 
@@ -92,10 +106,11 @@ aussi disponible sur le tableau de bord.
 
 | Symptôme | Action |
 |---|---|
-| Bandeau « session OmegaFlow doit être reconnectée » | Relancez `Configurer_Session_RMA.bat`. |
+| Bandeau « Votre session OmegaFlow a expiré » | Cliquez sur **Reconnecter** dans le bandeau ou sur la carte de session du tableau de bord. |
 | Le portail ne démarre pas | Vérifiez que le port 8765 n'est pas déjà utilisé, puis relancez `Démarrer_Portail_RMA.bat`. |
 | Mot de passe employé oublié | Un administrateur peut le réinitialiser depuis la page **Utilisateurs**. |
-| Base corrompue / réinstallation complète | Fermez le portail, supprimez `%LOCALAPPDATA%\RMAPortal`, relancez `Install-RMAPortal.ps1`, `Créer_Admin_RMA.bat` puis `Configurer_Session_RMA.bat`. Cette opération réinitialise aussi la référence (baseline) : tous les dossiers actuellement dans la file seront réappris sans notification. |
+| Personne devant le tableau de bord pour se reconnecter | Utilisez `Configurer_Session_RMA.bat` sur le serveur (outil de secours). |
+| Base corrompue / réinstallation complète | Fermez le portail, supprimez `%LOCALAPPDATA%\RMAPortal`, relancez `Install-RMAPortal.ps1`, `Créer_Admin_RMA.bat`, puis reconnectez la session OmegaFlow (tableau de bord ou `Configurer_Session_RMA.bat`). Cette opération réinitialise aussi la référence (baseline) : tous les dossiers actuellement dans la file seront réappris sans notification. |
 | Mettre à jour après un changement de code | `uv sync --frozen` puis `uv run alembic upgrade head`, puis relancer `Démarrer_Portail_RMA.bat`. |
 
 ## Tests et vérifications (pour la maintenance du code)

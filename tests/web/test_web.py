@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from rma_portal.domain.enums import SessionStatus
+from starlette.testclient import TestClient
+
+from rma_portal.domain.enums import PollStatus, SessionStatus
+from rma_portal.web.app import create_app
 from tests.web.conftest import ADMIN_PASSWORD, EMPLOYEE_PASSWORD, login
 
 
@@ -194,7 +197,7 @@ def test_session_banner_shown_when_auth_required(client, employee_user, uow_fact
     with uow_factory() as uow:
         uow.portal_accounts.mark_poll_finished(
             portal_account_id,
-            status=__import__("rma_portal.domain.enums", fromlist=["PollStatus"]).PollStatus.AUTH_REQUIRED,
+            status=PollStatus.AUTH_REQUIRED,
             polled_at=datetime.now(UTC),
             error="reconnexion requise",
         )
@@ -204,4 +207,92 @@ def test_session_banner_shown_when_auth_required(client, employee_user, uow_fact
 
     login(client, "employee", EMPLOYEE_PASSWORD)
     response = client.get("/")
-    assert "session OmegaFlow doit être reconnectée" in response.text
+    assert "Votre session OmegaFlow a expiré" in response.text
+    assert "Reconnecter" in response.text
+
+
+def test_authenticated_user_can_start_connection_and_it_returns_immediately(
+    application, employee_user, fake_open_and_wait
+):
+    # A background task that outlives its triggering request needs a
+    # persistent event loop -- `with TestClient(app):` (a lifespan-scoped
+    # BlockingPortal), not the bare `client` fixture, which tears down a
+    # fresh one-shot loop after every single call.
+    with TestClient(create_app(application)) as client:
+        fake_open_and_wait.hold_open()
+        login(client, "employee", EMPLOYEE_PASSWORD)
+
+        response = client.post("/session/connect", headers={"origin": "http://testserver"})
+
+        # A response came back at all (without hanging) while the fake
+        # browser is still held open -- proof the endpoint did not wait
+        # for it to close.
+        assert response.status_code == 200
+        assert "Fenêtre de connexion ouverte" in response.text
+        assert "Connexion en cours" in response.text
+        assert application.session_connector.is_active is True
+
+        fake_open_and_wait.close()
+
+
+def test_unauthenticated_connect_request_redirects_to_login(client):
+    response = client.post(
+        "/session/connect", headers={"origin": "http://testserver"}, follow_redirects=False
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+
+
+def test_connect_rejects_cross_origin_requests(client, employee_user):
+    login(client, "employee", EMPLOYEE_PASSWORD)
+    response = client.post("/session/connect", headers={"origin": "http://evil.example"})
+    assert response.status_code == 403
+
+
+def test_duplicate_connect_clicks_do_not_open_two_browsers(application, employee_user, fake_open_and_wait):
+    with TestClient(create_app(application)) as client:
+        fake_open_and_wait.hold_open()
+        login(client, "employee", EMPLOYEE_PASSWORD)
+
+        client.post("/session/connect", headers={"origin": "http://testserver"})
+        client.post("/session/connect", headers={"origin": "http://testserver"})
+
+        assert fake_open_and_wait.calls == 1
+        fake_open_and_wait.close()
+
+
+def test_reconnect_warning_and_button_visible_to_normal_authenticated_user(
+    client, employee_user, uow_factory, portal_account_id
+):
+    with uow_factory() as uow:
+        uow.portal_accounts.mark_poll_finished(
+            portal_account_id,
+            status=PollStatus.AUTH_REQUIRED,
+            polled_at=datetime.now(UTC),
+            error="session expirée",
+        )
+        uow.commit()
+    login(client, "employee", EMPLOYEE_PASSWORD)
+
+    response = client.get("/")
+
+    assert "Votre session OmegaFlow a expiré" in response.text
+    assert 'hx-post="/session/connect"' in response.text
+
+
+def test_application_shutdown_cancels_an_active_connection_task(
+    application, employee_user, fake_open_and_wait
+):
+    fake_open_and_wait.hold_open()
+    app = create_app(application)
+    # `with TestClient(app):` runs the FastAPI lifespan (startup/shutdown),
+    # unlike the `client` fixture -- needed here to exercise the shutdown
+    # cleanup. The scheduler it also starts is harmless: `application`'s
+    # sync_service uses FakePortalReaderFactory, never a real browser.
+    with TestClient(app) as shutdown_client:
+        login(shutdown_client, "employee", EMPLOYEE_PASSWORD)
+        response = shutdown_client.post("/session/connect", headers={"origin": "http://testserver"})
+        assert response.status_code == 200
+        assert application.session_connector.is_active is True
+
+    assert application.session_connector.is_active is False
