@@ -44,6 +44,7 @@ class Settings:
     port: int = 8765
     poll_interval_seconds: int = 300
     session_lifetime_hours: int = 12
+    session_verify_timeout_seconds: int = 45
     max_note_length: int = 2000
     omegaflow_base_url: str = "https://omegaflow.ma"
     omegaflow_start_route: str = "https://omegaflow.ma/#dossiers-en-instance-accord/"
@@ -105,6 +106,7 @@ def load_settings() -> Settings:
         port=_env_int("RMA_PORTAL_PORT", 8765),
         poll_interval_seconds=_env_int("RMA_PORTAL_POLL_INTERVAL_SECONDS", 300),
         session_lifetime_hours=_env_int("RMA_PORTAL_SESSION_LIFETIME_HOURS", 12),
+        session_verify_timeout_seconds=_env_int("RMA_PORTAL_SESSION_VERIFY_TIMEOUT_SECONDS", 45),
         headless_browser=_env_bool("RMA_PORTAL_HEADLESS_BROWSER", True),
         session_secret=os.environ.get("RMA_PORTAL_SESSION_SECRET", ""),
     )

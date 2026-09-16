@@ -8,11 +8,23 @@ second console process. It acquires the same cross-process profile lock, so
 it can never race the scheduler, a manual refresh, or the CLI fallback tool
 -- whichever holds the lock wins, and the others skip safely.
 
-When the employee closes the window, ``on_closed`` (in practice
-``SyncAgreementQueue.execute``) runs immediately -- after the profile lock
-has been released -- reusing the *existing* OmegaFlow authentication
-detection rather than a second implementation, so the dashboard reflects
-READY/AUTH_REQUIRED/ERROR without waiting for the next scheduled poll.
+Three phases run one after another, each its own background task so the
+dashboard can tell them apart instead of one long opaque "CONNECTING":
+
+1. **connecting** (``is_active``) -- the visible login browser is open,
+   waiting for the employee to close it. Bounded only by the employee,
+   never a timer. Ends the moment the window closes and cleanup/lock
+   release finish -- it does *not* include what happens next.
+2. **verifying** (``is_verifying``) -- a short, bounded, read-only check
+   (``verify_session``, in practice ``SyncAgreementQueue.verify_session``)
+   that the saved profile is still authenticated. A successful check marks
+   the account READY immediately, without waiting for the full dossier
+   baseline/enrichment -- that runs next, as its own phase.
+3. The normal synchronization (``run_sync``, in practice
+   ``SyncAgreementQueue.execute``) runs as a fire-and-forget task after a
+   successful check. It is *not* part of ``is_active``/``is_verifying``, so
+   it never keeps the dashboard on a stuck "CONNECTING"/"VERIFYING"; its own
+   progress is ``SyncAgreementQueue.is_running``.
 """
 
 from __future__ import annotations
@@ -20,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from collections.abc import Awaitable, Callable
 
 from rma_portal.application.dto import BrowserProfileLockedError
@@ -32,55 +45,88 @@ from rma_portal.infrastructure.portal.session_setup import (
 
 logger = logging.getLogger(__name__)
 
+VerifySession = Callable[[float], Awaitable[bool]]
+RunSync = Callable[[], Awaitable[object]]
+
+_DEFAULT_VERIFY_TIMEOUT_SECONDS = 45.0
+
 
 class SessionConnector:
     def __init__(
         self,
         settings: Settings,
-        on_closed: Callable[[], Awaitable[object]],
         *,
+        verify_session: VerifySession,
+        run_sync: RunSync,
+        verify_timeout_seconds: float = _DEFAULT_VERIFY_TIMEOUT_SECONDS,
         open_and_wait: OpenAndWait = launch_visible_browser_and_wait,
     ) -> None:
         self._settings = settings
-        self._on_closed = on_closed
+        self._verify_session = verify_session
+        self._run_sync = run_sync
+        self._verify_timeout_seconds = verify_timeout_seconds
         self._open_and_wait = open_and_wait
-        self._task: asyncio.Task[None] | None = None
+        self._login_task: asyncio.Task[None] | None = None
+        self._verify_task: asyncio.Task[None] | None = None
+        self._sync_task: asyncio.Task[None] | None = None
 
     @property
     def is_active(self) -> bool:
-        return self._task is not None and not self._task.done()
+        """True only while the visible login browser is open (CONNECTING)."""
+        return self._login_task is not None and not self._login_task.done()
+
+    @property
+    def is_verifying(self) -> bool:
+        """True only during the short bounded post-login auth check (VERIFYING)."""
+        return self._verify_task is not None and not self._verify_task.done()
 
     def start(self) -> bool:
         """Start a connection window.
 
-        Returns False and does nothing if one is already open -- a
+        Returns False and does nothing if the connect flow is already
+        running (login, verification, or the sync it triggered) -- a
         duplicate click (or a concurrent request) never opens a second
         browser.
         """
-        if self.is_active:
+        if self._is_running:
             return False
-        self._task = asyncio.create_task(self._run(), name="rma-portal-session-connect")
+        self._login_task = asyncio.create_task(self._run_login(), name="rma-portal-session-connect")
         return True
 
+    @property
+    def _is_running(self) -> bool:
+        return any(
+            task is not None and not task.done()
+            for task in (self._login_task, self._verify_task, self._sync_task)
+        )
+
     async def shutdown(self) -> None:
-        """Cancel an active connection task and wait for cleanup.
+        """Cancel any in-flight phase and wait for cleanup.
 
         Cancelling inside the ``async with AsyncCamoufox(...)`` block in
         ``launch_visible_browser_and_wait`` still runs that context
         manager's ``__aexit__`` (closing the browser) via Python's normal
         exception-propagation semantics, and the ``with
         acquire_profile_lock(...)`` around it still releases the lock.
+        Awaiting each cancelled task here (instead of firing-and-forgetting)
+        is what keeps shutdown free of "Task was destroyed but it is
+        pending" warnings.
         """
-        task, self._task = self._task, None
-        if task is not None and not task.done():
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+        for attr in ("_login_task", "_verify_task", "_sync_task"):
+            task: asyncio.Task[None] | None = getattr(self, attr)
+            setattr(self, attr, None)
+            if task is not None and not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
 
-    async def _run(self) -> None:
+    async def _run_login(self) -> None:
+        started = time.monotonic()
         try:
             with acquire_profile_lock(self._settings.browser_lock_path):
+                logger.info("login browser opened")
                 await self._open_and_wait(self._settings)
+                logger.info("login window closed elapsed=%.1fs", time.monotonic() - started)
         except BrowserProfileLockedError:
             logger.info("connexion manuelle ignorée : profil de navigateur déjà utilisé")
             return
@@ -89,10 +135,39 @@ class SessionConnector:
         except Exception:  # noqa: BLE001 - never let a bad launch crash the app
             logger.exception("échec inattendu lors de la connexion manuelle OmegaFlow")
             return
+        logger.info("cleanup completed, lock released elapsed=%.1fs", time.monotonic() - started)
 
-        # The lock above is released by this point, so the normal sync
-        # (which acquires it itself, via the real PortalReader) runs cleanly.
+        self._verify_task = asyncio.create_task(
+            self._run_verify(), name="rma-portal-session-verify"
+        )
+
+    async def _run_verify(self) -> None:
+        started = time.monotonic()
+        logger.info("authentication verification started")
         try:
-            await self._on_closed()
+            verified = await self._verify_session(self._verify_timeout_seconds)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - verify_session already reports failures itself
+            logger.exception("échec inattendu lors de la vérification de la session")
+            verified = False
+        logger.info(
+            "authentication verification finished ok=%s elapsed=%.1fs",
+            verified,
+            time.monotonic() - started,
+        )
+        if verified:
+            self._sync_task = asyncio.create_task(
+                self._run_sync_task(), name="rma-portal-session-sync"
+            )
+
+    async def _run_sync_task(self) -> None:
+        started = time.monotonic()
+        logger.info("synchronization started")
+        try:
+            await self._run_sync()
+        except asyncio.CancelledError:
+            raise
         except Exception:  # noqa: BLE001 - never crash the connector on a sync failure
-            logger.exception("échec de la synchronisation après fermeture du navigateur")
+            logger.exception("échec de la synchronisation après vérification de la session")
+        logger.info("synchronization finished elapsed=%.1fs", time.monotonic() - started)

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import time
 from datetime import UTC, datetime
 
 from starlette.testclient import TestClient
 
 from rma_portal.domain.enums import PollStatus, SessionStatus
+from rma_portal.infrastructure.portal.session_connector import SessionConnector
 from rma_portal.web.app import create_app
+from tests.unit.infrastructure.fakes import FakeVerifySession
 from tests.web.conftest import ADMIN_PASSWORD, EMPLOYEE_PASSWORD, login
 
 
@@ -296,3 +299,71 @@ def test_application_shutdown_cancels_an_active_connection_task(
         assert application.session_connector.is_active is True
 
     assert application.session_connector.is_active is False
+
+
+def test_dashboard_content_disinherits_hx_select_for_session_connect_buttons(
+    client, employee_user, uow_factory, portal_account_id
+):
+    """Regression: the periodic-refresh wrapper's hx-select="#dashboard-content"
+    must not be inherited by the /session/connect buttons -- otherwise
+    htmx finds no match in their session-card-only response and swaps in
+    nothing, making the session card disappear after a click."""
+    with uow_factory() as uow:
+        uow.portal_accounts.mark_poll_finished(
+            portal_account_id,
+            status=PollStatus.AUTH_REQUIRED,
+            polled_at=datetime.now(UTC),
+            error="session expirée",
+        )
+        uow.commit()
+    login(client, "employee", EMPLOYEE_PASSWORD)
+
+    response = client.get("/")
+
+    assert 'id="dashboard-content"' in response.text
+    assert 'hx-disinherit="hx-select"' in response.text
+    # Sanity: the disinherit sits on the same element that declares hx-select.
+    content_div = response.text.split('id="dashboard-content"', 1)[1].split(">", 1)[0]
+    assert 'hx-select="#dashboard-content"' in content_div
+    assert 'hx-disinherit="hx-select"' in content_div
+
+
+def test_dashboard_and_health_stay_responsive_while_verification_is_in_flight(
+    application, employee_user, fake_open_and_wait
+):
+    """Regression: dashboard/login/health must remain responsive during
+    browser launch, authentication verification, synchronization and
+    cleanup -- proven here by holding the bounded post-login auth check
+    open and confirming other routes still answer promptly."""
+    verify = FakeVerifySession(result=True)
+    application.session_connector = SessionConnector(
+        application.settings,
+        verify_session=verify,
+        run_sync=application.sync_service.execute,
+        open_and_wait=fake_open_and_wait,
+    )
+    fake_open_and_wait.hold_open()
+
+    with TestClient(create_app(application)) as client:
+        login(client, "employee", EMPLOYEE_PASSWORD)
+        response = client.post("/session/connect", headers={"origin": "http://testserver"})
+        assert response.status_code == 200
+
+        verify.hold()
+        fake_open_and_wait.close()  # login window "closes" -> verification starts and hangs
+
+        deadline = time.monotonic() + 2.0
+        while application.session_connector.is_verifying is False:
+            assert time.monotonic() < deadline, "verification never started"
+            time.sleep(0.01)
+
+        started = time.monotonic()
+        health_response = client.get("/health")
+        dashboard_response = client.get("/")
+        elapsed = time.monotonic() - started
+
+        assert health_response.status_code == 200
+        assert dashboard_response.status_code == 200
+        assert elapsed < 1.0  # never waited on the in-flight verification
+
+        verify.release()

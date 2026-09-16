@@ -9,6 +9,9 @@
   {% elif session.state == "CONNECTING" %}
     <p class="session-state">Fenêtre de connexion ouverte</p>
     <button class="primary" type="button" disabled>Connexion en cours…</button>
+  {% elif session.state == "VERIFYING" %}
+    <p class="session-state">Vérification de la session…</p>
+    <button class="primary" type="button" disabled>Vérification en cours…</button>
   {% elif session.state == "READY" %}
     <p class="session-state success">Session active</p>
     <button class="secondary" hx-post="/session/connect" hx-target="#session-card" hx-swap="outerHTML">
@@ -32,6 +35,9 @@
     · Dernière synchronisation réussie :
     {{ session.last_success_at.strftime("%d/%m/%Y %H:%M") if session.last_success_at else "jamais" }}
   </p>
+  {% if session.syncing %}
+  <p class="muted small">Synchronisation des dossiers en cours…</p>
+  {% endif %}
   <p class="muted small">
     La fenêtre de connexion OmegaFlow s'ouvre sur l'ordinateur qui exécute le Portail RMA,
     pas sur votre poste.

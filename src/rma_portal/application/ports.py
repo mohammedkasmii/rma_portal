@@ -18,7 +18,7 @@ from rma_portal.application.dto import (
     QueueRow,
     QueueSnapshot,
 )
-from rma_portal.domain.enums import NotificationKind, PollStatus, WorkStatus
+from rma_portal.domain.enums import NotificationKind, PollStatus, SessionStatus, WorkStatus
 from rma_portal.domain.models import (
     Dossier,
     DossierNote,
@@ -42,6 +42,12 @@ class PortalReader(Protocol):
 
     async def read_dossier_details(self, dossier: PortalDossierRef) -> DossierDetails: ...
 
+    async def verify_authenticated(self) -> None:
+        """Raise ``PortalAuthRequiredError`` if the saved session is not
+        authenticated; otherwise return. Must not read the queue or any
+        dossier detail -- callers rely on this being fast."""
+        ...
+
 
 class PortalReaderFactory(Protocol):
     def open(self) -> AbstractAsyncContextManager[PortalReader]: ...
@@ -64,6 +70,19 @@ class PortalAccountRepository(Protocol):
     ) -> None: ...
 
     def mark_baseline_completed(self, account_id: int, completed_at: datetime) -> None: ...
+
+    def mark_session_checked(
+        self,
+        account_id: int,
+        *,
+        status: SessionStatus,
+        checked_at: datetime,
+        error: str | None,
+    ) -> None:
+        """Record the outcome of a bounded authentication check (no poll_runs
+        row -- unlike :meth:`mark_poll_finished`, no queue/dossier read
+        happened). Never touches ``last_success_at``."""
+        ...
 
 
 class DossierRepository(Protocol):

@@ -25,7 +25,7 @@ from rma_portal.application.dto import (
     SyncResult,
 )
 from rma_portal.application.ports import PortalReader, PortalReaderFactory, UnitOfWorkFactory
-from rma_portal.domain.enums import NotificationKind, PollStatus
+from rma_portal.domain.enums import NotificationKind, PollStatus, SessionStatus
 from rma_portal.domain.models import Dossier, DossierDates
 from rma_portal.domain.sync_rules import ExistingDossierState, ReconciliationInput, reconcile
 
@@ -51,6 +51,11 @@ class SyncAgreementQueue:
         self._lock = asyncio.Lock()
         self._inflight: asyncio.Future[SyncResult] | None = None
 
+    @property
+    def is_running(self) -> bool:
+        """True while a poll (scheduled, manual, or connect-triggered) is in flight."""
+        return self._lock.locked()
+
     async def execute(self) -> SyncResult:
         if self._lock.locked() and self._inflight is not None:
             return await asyncio.shield(self._inflight)
@@ -64,6 +69,14 @@ class SyncAgreementQueue:
             except BaseException as exc:  # noqa: BLE001 - propagate after publishing
                 if not inflight.done():
                     inflight.set_exception(exc)
+                # A concurrent caller may never materialize to shield/await
+                # this Future (e.g. a solo cancellation during shutdown).
+                # asyncio logs "Future exception was never retrieved" at GC
+                # time unless *someone* reads it -- reading it here (harmless;
+                # multiple reads of a resolved Future are fine) guarantees
+                # that always happens, while any concurrent shielder still
+                # observes the same exception independently.
+                inflight.exception()
                 self._inflight = None
                 raise
             if not inflight.done():
@@ -169,6 +182,72 @@ class SyncAgreementQueue:
             deactivated=deactivated,
             notifications_created=notified,
         )
+
+    async def verify_session(self, timeout_seconds: float) -> bool:
+        """Short, bounded, read-only check that the saved profile is still
+        authenticated -- deliberately does *not* read the queue or enrich
+        any dossier, so it returns long before a full baseline/enrichment
+        poll would. Used right after the employee closes the manual login
+        window, so the dashboard can show READY without waiting for
+        :meth:`execute` to run the normal synchronization afterward.
+
+        Reuses the same reader (and therefore the same
+        ``_assert_authenticated``/``detect_auth_required`` logic) that
+        :meth:`execute` uses -- there is exactly one implementation of
+        "is OmegaFlow authenticated". Never raises: the boolean return is
+        the only signal callers need, and the account's persisted
+        ``session_status`` is always updated to match (READY,
+        AUTH_REQUIRED, or ERROR on any other failure/timeout) so the
+        dashboard immediately reflects an actionable state either way.
+        """
+        now = datetime.now(UTC)
+        with self._uow_factory() as uow:
+            account = uow.portal_accounts.get_default()
+            if account is None or account.id is None:
+                raise RuntimeError("no portal account is configured")
+            account_id = account.id
+
+        try:
+            reader_cm = self._reader_factory.open()
+        except BrowserProfileLockedError as exc:
+            self._mark_session_checked(account_id, SessionStatus.ERROR, now, str(exc))
+            return False
+
+        async def _check() -> None:
+            reader = await reader_cm.__aenter__()
+            try:
+                await reader.verify_authenticated()
+            finally:
+                with contextlib.suppress(Exception):
+                    await reader_cm.__aexit__(None, None, None)
+
+        try:
+            await asyncio.wait_for(_check(), timeout=timeout_seconds)
+        except BrowserProfileLockedError as exc:
+            status, error = SessionStatus.ERROR, str(exc)
+        except PortalAuthRequiredError as exc:
+            status, error = SessionStatus.AUTH_REQUIRED, str(exc)
+        except TimeoutError:
+            status, error = (
+                SessionStatus.ERROR,
+                f"Vérification de session interrompue après {timeout_seconds:.0f}s.",
+            )
+        except Exception as exc:  # noqa: BLE001 - any other launch/read failure
+            status, error = SessionStatus.ERROR, _short_error(exc)
+        else:
+            status, error = SessionStatus.READY, None
+
+        self._mark_session_checked(account_id, status, now, error)
+        return status is SessionStatus.READY
+
+    def _mark_session_checked(
+        self, account_id: int, status: SessionStatus, checked_at: datetime, error: str | None
+    ) -> None:
+        with self._uow_factory() as uow:
+            uow.portal_accounts.mark_session_checked(
+                account_id, status=status, checked_at=checked_at, error=error
+            )
+            uow.commit()
 
     def _record_failed_poll(self, account_id: int, started_at: datetime, error: str) -> SyncResult:
         """A poll that never got a reader at all: one FAILED row, created

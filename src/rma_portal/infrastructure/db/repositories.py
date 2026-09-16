@@ -194,6 +194,21 @@ class SqlAlchemyPortalAccountRepository:
         if row is not None and row.baseline_completed_at is None:
             row.baseline_completed_at = completed_at
 
+    def mark_session_checked(
+        self,
+        account_id: int,
+        *,
+        status: SessionStatus,
+        checked_at: datetime,
+        error: str | None,
+    ) -> None:
+        row = self._session.get(PortalAccountRow, account_id)
+        if row is None:
+            return
+        row.last_poll_at = checked_at
+        row.last_error = error
+        row.session_status = status
+
 
 class SqlAlchemyDossierRepository:
     def __init__(self, session: Session) -> None:

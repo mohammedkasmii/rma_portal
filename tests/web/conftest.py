@@ -31,7 +31,10 @@ def application(settings, uow_factory, portal_account_id, fake_open_and_wait) ->
     dossier_service = DossierService(uow_factory)
     sync_service = SyncAgreementQueue(reader_factory, uow_factory)
     session_connector = SessionConnector(
-        settings, on_closed=sync_service.execute, open_and_wait=fake_open_and_wait
+        settings,
+        verify_session=sync_service.verify_session,
+        run_sync=sync_service.execute,
+        open_and_wait=fake_open_and_wait,
     )
     settings.session_secret = "test-secret-not-for-production"
     return Application(

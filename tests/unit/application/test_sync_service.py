@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import gc
+import logging
 from datetime import UTC, datetime
 
 import pytest
@@ -492,3 +494,109 @@ async def test_blank_required_quote_date_is_retried_until_populated_then_stops(
     # 5. A third unchanged poll: the quote date is now present, so no further fetch.
     await sync.execute()
     assert factory.readers[2].read_calls == []
+
+
+@pytest.mark.asyncio
+async def test_verify_session_marks_ready_without_reading_the_queue(uow_factory, portal_account_id):
+    """The bounded check must establish READY without the full baseline/
+    enrichment -- confirmed here by the queue/dossiers never being touched."""
+    factory = FakePortalReaderFactory(polls=[QueueSnapshot(rows=(_row("a"),), pages_seen=1)])
+    sync = SyncAgreementQueue(factory, uow_factory)
+
+    verified = await sync.verify_session(5.0)
+
+    assert verified is True
+    with uow_factory() as uow:
+        account = uow.portal_accounts.get(portal_account_id)
+        assert uow.dossiers.existing_state_by_account(portal_account_id) == {}
+    assert account.session_status.value == "READY"
+    assert factory.readers[0].read_calls == []
+
+
+@pytest.mark.asyncio
+async def test_verify_session_marks_auth_required_on_login_page(uow_factory, portal_account_id):
+    factory = FakePortalReaderFactory(polls=[PortalAuthRequiredError("session expirée")])
+    sync = SyncAgreementQueue(factory, uow_factory)
+
+    verified = await sync.verify_session(5.0)
+
+    assert verified is False
+    with uow_factory() as uow:
+        account = uow.portal_accounts.get(portal_account_id)
+    assert account.session_status.value == "AUTH_REQUIRED"
+    assert account.last_error == "session expirée"
+
+
+@pytest.mark.asyncio
+async def test_verify_session_times_out_and_leaves_an_actionable_error(uow_factory, portal_account_id):
+    """Regression: a hung/slow authentication check must not hang the
+    connect flow forever -- it must resolve to a non-READY, actionable
+    state within the given timeout."""
+    factory = FakePortalReaderFactory(
+        polls=[QueueSnapshot(rows=(), pages_seen=1)], verify_delay_seconds=1.0
+    )
+    sync = SyncAgreementQueue(factory, uow_factory)
+
+    verified = await sync.verify_session(0.05)
+
+    assert verified is False
+    with uow_factory() as uow:
+        account = uow.portal_accounts.get(portal_account_id)
+    assert account.session_status.value == "ERROR"
+    assert account.last_error  # a message, not empty -- an actionable retry is possible
+
+
+@pytest.mark.asyncio
+async def test_verify_session_does_not_claim_a_full_synchronization_succeeded(
+    uow_factory, portal_account_id
+):
+    """`last_success_at` means "a full synchronization completed"; the
+    bounded check alone must not set it."""
+    factory = FakePortalReaderFactory(polls=[QueueSnapshot(rows=(), pages_seen=1)])
+    sync = SyncAgreementQueue(factory, uow_factory)
+
+    await sync.verify_session(5.0)
+
+    with uow_factory() as uow:
+        account = uow.portal_accounts.get(portal_account_id)
+    assert account.last_success_at is None
+
+
+@pytest.mark.asyncio
+async def test_is_running_reflects_an_in_flight_execute(uow_factory, portal_account_id):
+    factory = FakePortalReaderFactory(polls=[QueueSnapshot(rows=(), pages_seen=1)])
+    sync = SyncAgreementQueue(factory, uow_factory)
+    assert sync.is_running is False
+
+    task = asyncio.create_task(sync.execute())
+    await asyncio.sleep(0)  # let execute() acquire the lock and reach the fake's suspension point
+    assert sync.is_running is True
+
+    await task
+    assert sync.is_running is False
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_solo_execute_never_leaves_an_unretrieved_future_exception(
+    uow_factory, portal_account_id, caplog
+):
+    """Regression for the "unhandled CancelledError/Future warning during
+    shutdown" observed live after closing the login window: `execute()`
+    stashes its result on `self._inflight` so a *concurrent* caller can
+    `asyncio.shield` it, but when cancelled with no concurrent caller ever
+    materializing to read it, asyncio logs "Future exception was never
+    retrieved" once that Future is garbage-collected."""
+    factory = FakePortalReaderFactory(polls=[QueueSnapshot(rows=(), pages_seen=1)])
+    sync = SyncAgreementQueue(factory, uow_factory)
+
+    task = asyncio.create_task(sync.execute())
+    await asyncio.sleep(0)  # let it start and reach the fake's first suspension point
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    del task
+    with caplog.at_level(logging.ERROR, logger="asyncio"):
+        gc.collect()
+
+    assert "was never retrieved" not in caplog.text

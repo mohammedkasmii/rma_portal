@@ -304,6 +304,15 @@ class CamoufoxPortalReader:
 
         return merge_snapshots(pages_collected)
 
+    async def verify_authenticated(self) -> None:
+        """Short, read-only check: navigate to the queue's start route and
+        run the exact same auth detection as ``read_agreement_queue`` --
+        without waiting for the view, applying any filter, or paginating.
+        """
+        page = self._require_page()
+        await page.goto(self._start_route, wait_until="domcontentloaded", timeout=30_000)
+        await self._assert_authenticated()
+
     async def read_dossier_details(self, dossier: PortalDossierRef) -> DossierDetails:
         page = self._require_page()
         target = urljoin(self._base_url, dossier.details_href)

@@ -3,12 +3,22 @@
      hx-trigger="every 30s"
      hx-include="#filters"
      hx-select="#dashboard-content"
+     hx-disinherit="hx-select"
      hx-swap="outerHTML">
+  {# hx-disinherit stops #session-card and the banner buttons below (which
+     hx-post to /session/connect and only get back the session-card
+     fragment, not a #dashboard-content element) from inheriting this
+     hx-select -- without it, htmx finds no match in their response and
+     swaps in nothing, making the session card disappear after a click. #}
 
   {% if session.state == "CONNECTING" %}
   <div class="banner banner-info">
     Fenêtre de connexion OmegaFlow ouverte sur l'ordinateur du portail.
     Connectez-vous, validez la session si demandé, puis fermez la fenêtre.
+  </div>
+  {% elif session.state == "VERIFYING" %}
+  <div class="banner banner-info">
+    Vérification de la session OmegaFlow en cours…
   </div>
   {% elif session.state == "AUTH_REQUIRED" %}
   <div class="banner banner-warning">

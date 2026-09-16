@@ -33,6 +33,7 @@ class FakePortalReader:
     )
     lock_held: bool = False
     aenter_exception: Exception | None = None
+    verify_delay_seconds: float = 0.0
     read_calls: list[str] = field(default_factory=list)
 
     async def __aenter__(self) -> FakePortalReader:
@@ -54,6 +55,17 @@ class FakePortalReader:
         if isinstance(self.poll.result, Exception):
             raise self.poll.result
         return self.poll.result
+
+    async def verify_authenticated(self) -> None:
+        # Same scripted outcome as read_agreement_queue: an Exception (e.g.
+        # PortalAuthRequiredError) means "not authenticated"; anything else
+        # means the saved session passes the check. `verify_delay_seconds`
+        # lets a test simulate a slow/hanging check to exercise
+        # SyncAgreementQueue.verify_session's bounded timeout.
+        if self.verify_delay_seconds:
+            await asyncio.sleep(self.verify_delay_seconds)
+        if isinstance(self.poll.result, Exception):
+            raise self.poll.result
 
     async def read_dossier_details(self, dossier: PortalDossierRef) -> DossierDetails:
         self.read_calls.append(dossier.record_id)
@@ -90,11 +102,13 @@ class FakePortalReaderFactory:
         | None = None,
         lock_held: Callable[[], bool] | bool = False,
         aenter_exception: Exception | None = None,
+        verify_delay_seconds: float = 0.0,
     ) -> None:
         self._polls = list(polls)
         self._details_by_id = details_by_id or {}
         self._lock_held = lock_held
         self._aenter_exception = aenter_exception
+        self._verify_delay_seconds = verify_delay_seconds
         self.readers: list[FakePortalReader] = []
 
     def open(self) -> FakePortalReader:
@@ -105,6 +119,7 @@ class FakePortalReaderFactory:
             details_by_id=self._details_by_id,
             lock_held=held,
             aenter_exception=self._aenter_exception,
+            verify_delay_seconds=self._verify_delay_seconds,
         )
         self.readers.append(reader)
         return reader

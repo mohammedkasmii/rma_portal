@@ -58,10 +58,18 @@ def build_application(settings: Settings | None = None) -> Application:
     account_service = AccountService(uow_factory, password_hasher)
     dossier_service = DossierService(uow_factory)
     # Verifies the session immediately after the employee closes the login
-    # window, reusing the same SyncAgreementQueue/CamoufoxPortalReader the
-    # scheduler and manual refresh already use -- no second implementation
-    # of OmegaFlow authentication detection.
-    session_connector = SessionConnector(settings, on_closed=sync_service.execute)
+    # window (bounded, no queue/enrichment read -- see
+    # SyncAgreementQueue.verify_session), reusing the same
+    # SyncAgreementQueue/CamoufoxPortalReader the scheduler and manual
+    # refresh already use -- no second implementation of OmegaFlow
+    # authentication detection. The normal synchronization then runs
+    # afterward, as its own separately-tracked phase.
+    session_connector = SessionConnector(
+        settings,
+        verify_session=sync_service.verify_session,
+        run_sync=sync_service.execute,
+        verify_timeout_seconds=settings.session_verify_timeout_seconds,
+    )
 
     return Application(
         settings=settings,

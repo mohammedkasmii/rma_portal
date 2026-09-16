@@ -1,4 +1,4 @@
-"""Test double for ``session_setup.OpenAndWait`` / ``SessionConnector``.
+"""Test doubles for ``session_setup.OpenAndWait`` / ``SessionConnector``.
 
 Uses an ``asyncio.Event`` (not a ``threading.Event``/``asyncio.to_thread``
 blocking call) so that cancelling the task awaiting it -- e.g.
@@ -47,3 +47,38 @@ class FakeOpenAndWait:
             self._loop.call_soon_threadsafe(self._closed.set)
         else:
             self._closed.set()
+
+
+class FakeVerifySession:
+    """Test double for ``SessionConnector``'s ``verify_session`` callable.
+
+    Same thread-hopping trick as :class:`FakeOpenAndWait`, for tests that
+    need to hold the bounded post-login auth check open across a
+    ``with TestClient(app):`` request/response boundary (e.g. to prove
+    other routes stay responsive while it runs).
+    """
+
+    def __init__(self, *, result: bool = True) -> None:
+        self.calls: list[float] = []
+        self.result = result
+        self._released = asyncio.Event()
+        self._released.set()  # default: resolves instantly
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    async def __call__(self, timeout_seconds: float) -> bool:
+        self.calls.append(timeout_seconds)
+        self._loop = asyncio.get_running_loop()
+        await self._released.wait()
+        return self.result
+
+    def hold(self) -> None:
+        if self._loop is not None:
+            self._loop.call_soon_threadsafe(self._released.clear)
+        else:
+            self._released.clear()
+
+    def release(self) -> None:
+        if self._loop is not None:
+            self._loop.call_soon_threadsafe(self._released.set)
+        else:
+            self._released.set()
