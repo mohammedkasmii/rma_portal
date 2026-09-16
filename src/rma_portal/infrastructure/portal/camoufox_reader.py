@@ -2,17 +2,13 @@
 
 Everything this module does to the OmegaFlow page is navigation, selection
 and reading -- see ``_read_only_route`` for the network-level enforcement
-and docs/architecture.md section 7 for the full read-only policy. Some
-steps (notably revealing the filter panel before ``#kn-submit-filters``
-appears) are best-effort against a captured DOM snapshot and are flagged in
-the project report as requiring a live OmegaFlow session to confirm.
+and docs/architecture.md section 7 for the full read-only policy.
 """
 
 from __future__ import annotations
 
 import contextlib
 import logging
-import re
 from pathlib import Path
 from types import TracebackType
 from typing import Any
@@ -52,10 +48,13 @@ from rma_portal.infrastructure.portal.session_state import (
 logger = logging.getLogger(__name__)
 
 _WRITE_HOST_MARKERS = ("omegaflow.ma", "knack.com")
-_FILTER_TOGGLE_PATTERN = re.compile("ajouter des filtres", re.IGNORECASE)
 _VERIFY_POLL_INTERVAL_MS = 500
 
 AUTHENTICATED_VIEW_SELECTOR = "#view_1874"
+# Captured selector for the Garage agréé search form's submit button --
+# see _submit_search. Knack toggles an "is-loading" class on this exact
+# element while the AJAX-driven search is in flight.
+_SEARCH_SUBMIT_SELECTOR = '#view_1874 form.kn-search_form button[type="submit"]'
 
 
 async def is_authenticated_view_present(page: Any) -> bool:
@@ -235,27 +234,6 @@ class CamoufoxPortalReader:
                 "La session OmegaFlow doit être reconnectée (Configurer_Session_RMA.bat)."
             )
 
-    async def _reveal_filter_submit_button(self, page: Any) -> None:
-        """Best-effort: expand the filter panel if the submit button is hidden.
-
-        RMA_FIRST only captured ``#kn-submit-filters`` after this panel was
-        already expanded; the exact toggle selector was not captured. The
-        fallback text search is scoped to ``#view_1874`` so it can never
-        click an unrelated "ajouter des filtres" link elsewhere on the page.
-        This is a no-op if the button is already visible. Confirm against a
-        live session.
-        """
-        view = page.locator("#view_1874")
-        submit = view.locator("#kn-submit-filters")
-        if await submit.count() > 0 and await submit.first.is_visible():
-            return
-        toggle = view.locator(".kn-add-filter")
-        if await toggle.count() == 0:
-            toggle = view.get_by_text(_FILTER_TOGGLE_PATTERN)
-        if await toggle.count() > 0:
-            await toggle.first.click()
-            await submit.first.wait_for(state="visible", timeout=10_000)
-
     async def _apply_garage_agree_filter(self, page: Any) -> None:
         """Select 'Garage agréé' on the Chosen-hidden native ``<select>``.
 
@@ -269,7 +247,6 @@ class CamoufoxPortalReader:
         depends on them rather than on Playwright's own event dispatch.
         """
         view = page.locator("#view_1874")
-        await self._reveal_filter_submit_button(page)
 
         procedure = view.locator("#kn-conn-1-field_219")
         await procedure.wait_for(state="attached", timeout=15_000)
@@ -288,24 +265,47 @@ class CamoufoxPortalReader:
             "}"
         )
 
-        await view.locator("#kn-submit-filters").click()
-        await self._wait_for_view_refresh(page)
+        await self._submit_search(page)
 
-    async def _wait_for_view_refresh(self, page: Any) -> None:
-        """Wait for the AJAX-driven view refresh to settle.
+    async def _submit_search(self, page: Any) -> None:
+        """Clicks the search form's submit button -- captured selector:
+        ``#view_1874 form.kn-search_form button[type="submit"]`` -- and
+        waits for the AJAX-driven search to complete.
 
-        Deliberately does not require any row to exist: a successfully
-        filtered view with zero dossiers is valid and must produce a
-        COMPLETE snapshot with zero rows (see docs/omegaflow-contract.md).
-        Knack views typically show a transient loading indicator while an
-        AJAX refresh is in flight; if present, wait for it to clear before
-        falling back to the usual network-idle settle. Confirm the loading
-        indicator's exact markup against a live session.
+        Completion is read from the button's own ``is-loading`` class,
+        which Knack toggles on this exact element while the request is in
+        flight: first a short, best-effort wait for the class to *appear*
+        (the request may already be done by the time this checks, in
+        which case there is nothing to observe starting), then a required
+        wait for it to *disappear*. Deliberately does not require any row
+        to exist afterward: a successfully filtered view with zero
+        dossiers is valid and must produce a COMPLETE snapshot with zero
+        rows (see docs/omegaflow-contract.md).
         """
-        loading = page.locator("#view_1874.kn-loading, #view_1874 .kn-loading-spinner")
+        button = page.locator(_SEARCH_SUBMIT_SELECTOR)
+        try:
+            await button.wait_for(state="visible", timeout=15_000)
+        except Exception as exc:
+            raise PortalReadError(
+                "Bouton de recherche OmegaFlow introuvable (étape: affichage du bouton, "
+                f"sélecteur: {_SEARCH_SUBMIT_SELECTOR!r})."
+            ) from exc
+
+        await button.click()
+
+        loading_button = page.locator(f"{_SEARCH_SUBMIT_SELECTOR}.is-loading")
+        # Best-effort: the AJAX request may already be done by the time this
+        # checks, in which case there is nothing to observe starting.
         with contextlib.suppress(Exception):
-            if await loading.count() > 0:
-                await loading.first.wait_for(state="detached", timeout=20_000)
+            await loading_button.wait_for(state="attached", timeout=2_000)
+        try:
+            await loading_button.wait_for(state="detached", timeout=20_000)
+        except Exception as exc:
+            raise PortalReadError(
+                "Délai dépassé en attendant la fin de la recherche OmegaFlow "
+                f"(étape: recherche, sélecteur: {_SEARCH_SUBMIT_SELECTOR!r})."
+            ) from exc
+
         await self._settle(page)
 
     async def _go_to_page(self, page: Any, page_number: int) -> None:
