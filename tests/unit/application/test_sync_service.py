@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from rma_portal.application import sync_service as sync_service_module
 from rma_portal.application.dossier_service import DossierService
 from rma_portal.application.dto import (
     DetailReadError,
@@ -377,6 +378,40 @@ async def test_browser_context_launch_failure_finishes_poll_as_failed(
     result2 = await sync.execute()
     assert result2.status == PollStatus.FAILED
     assert _poll_run_count(engine) == 2
+
+
+@pytest.mark.asyncio
+async def test_execute_finishes_as_failed_when_cleanup_stalls_after_a_complete_read(
+    uow_factory, portal_account_id, monkeypatch
+):
+    """Regression: bounded browser cleanup must cover the full
+    scheduled/manual/post-login synchronization (execute()/_execute_once()),
+    not just verify_session -- all three callers share this one
+    implementation. A stalled teardown after an otherwise COMPLETE read
+    must finish the poll as FAILED, set the account to ERROR, release
+    is_running, and never silently report success -- while preserving
+    whatever was already reconciled/committed before cleanup ran."""
+    monkeypatch.setattr(sync_service_module, "_CLEANUP_TIMEOUT_SECONDS", 0.05)
+    row = _row("a")
+    cleanup_gate = asyncio.Event()  # deliberately never set: cleanup hangs
+    factory = FakePortalReaderFactory(
+        polls=[QueueSnapshot(rows=(row,), pages_seen=1)],
+        aexit_gate=cleanup_gate,
+    )
+    sync = SyncAgreementQueue(factory, uow_factory)
+
+    result = await asyncio.wait_for(sync.execute(), timeout=1.0)
+
+    assert result.status == PollStatus.FAILED
+    assert result.created == 1  # captured data preserved, not discarded
+    assert sync.is_running is False  # the sync must stop reporting running
+    with uow_factory() as uow:
+        account = uow.portal_accounts.get(portal_account_id)
+        state = uow.dossiers.existing_state_by_account(portal_account_id)
+    assert account.session_status.value == "ERROR"
+    assert account.last_error
+    # The dossier reconciled before cleanup ran is preserved, not rolled back.
+    assert state["a"].active is True
 
 
 @pytest.mark.asyncio

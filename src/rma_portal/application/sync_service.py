@@ -9,7 +9,6 @@ with in-memory fakes.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 from datetime import UTC, datetime
 
@@ -30,6 +29,13 @@ from rma_portal.domain.models import Dossier, DossierDates
 from rma_portal.domain.sync_rules import ExistingDossierState, ReconciliationInput, reconcile
 
 logger = logging.getLogger(__name__)
+
+_CLEANUP_TIMEOUT_SECONDS = 30.0
+
+_UNCONFIRMED_CLEANUP_MESSAGE = (
+    "Le nettoyage du navigateur après synchronisation a échoué ou a expiré ; le profil "
+    "reste indisponible jusqu'au redémarrage du Portail RMA."
+)
 
 
 class SyncAgreementQueue:
@@ -120,8 +126,8 @@ class SyncAgreementQueue:
                 poll_run_id = poll_run.id
                 uow.commit()
         except Exception as exc:  # noqa: BLE001 - cannot even record the attempt
-            with contextlib.suppress(Exception):
-                await reader_cm.__aexit__(None, None, None)
+            if not await self._close_reader(reader_cm):
+                return self._record_failed_poll(account_id, now, _UNCONFIRMED_CLEANUP_MESSAGE)
             return self._record_failed_poll(account_id, now, _short_error(exc))
 
         try:
@@ -152,8 +158,20 @@ class SyncAgreementQueue:
             snapshot = QueueSnapshot()
             created = reactivated = deactivated = notified = details_failed = 0
         finally:
-            with contextlib.suppress(Exception):
-                await reader_cm.__aexit__(None, None, None)
+            cleanup_ok = await self._close_reader(reader_cm)
+
+        if not cleanup_ok:
+            # Overrides whatever the read/reconcile stage found -- even a
+            # COMPLETE poll -- the same rule verify_session follows: an
+            # unconfirmed teardown means this browser session can no
+            # longer be accounted for, so the poll itself must finish as
+            # FAILED/ERROR. Whatever was already reconciled and committed
+            # by _reconcile_and_enrich is deliberately left untouched
+            # (created/reactivated/deactivated/notified/details_failed and
+            # the snapshot counts are not reset here) -- only the
+            # *cleanup* failed, not the data captured before it.
+            status = PollStatus.FAILED
+            error = _UNCONFIRMED_CLEANUP_MESSAGE
 
         completed_at = datetime.now(UTC)
         with self._uow_factory() as uow:
@@ -182,6 +200,33 @@ class SyncAgreementQueue:
             deactivated=deactivated,
             notifications_created=notified,
         )
+
+    async def _close_reader(self, reader_cm) -> bool:
+        """Bounded, best-effort close -- returns whether it was confirmed
+        to finish within :data:`_CLEANUP_TIMEOUT_SECONDS`.
+
+        Mirrors :meth:`verify_session`'s own bounded cleanup: a plain,
+        unbounded ``await reader_cm.__aexit__(...)`` here would let a
+        stalled browser-manager teardown keep this poll (and therefore
+        ``is_running``) pending indefinitely, whether reached via a
+        scheduled poll, a manual refresh, or the post-login synchronization
+        ``SessionConnector`` triggers -- all three share this one
+        ``execute()``/``_execute_once()`` implementation. Never manages the
+        profile lock itself: ``CamoufoxPortalReader.__aexit__`` already
+        keeps it held (never releases it) whenever its own teardown cannot
+        be confirmed, exactly the same protection ``verify_session`` and
+        the visible login browser rely on -- this only reports the outcome
+        so the poll itself can be finished correctly (FAILED/ERROR, never
+        a false success) instead of also managing lock ownership here.
+        """
+        try:
+            await asyncio.wait_for(
+                reader_cm.__aexit__(None, None, None), timeout=_CLEANUP_TIMEOUT_SECONDS
+            )
+        except Exception:  # noqa: BLE001 - reported via the return value, not swallowed
+            logger.exception("échec du nettoyage du navigateur après synchronisation")
+            return False
+        return True
 
     async def verify_session(self, timeout_seconds: float) -> bool:
         """Short, bounded, read-only check that the saved profile is still
@@ -301,6 +346,26 @@ class SyncAgreementQueue:
 
         self._mark_session_checked(account_id, status, now, error)
         return status is SessionStatus.READY
+
+    async def mark_login_teardown_failed(self, message: str) -> None:
+        """Persist ERROR with ``message`` for a *visible login browser*
+        teardown that could not be confirmed (``SessionConnector`` calls
+        this after catching ``BrowserTeardownError`` from
+        ``launch_visible_browser_and_wait``).
+
+        Reuses the exact same account-status persistence
+        :meth:`verify_session` uses -- there is exactly one place that
+        writes ``session_status`` -- so ``build_session_view`` reflects
+        the failure immediately instead of falling back to whatever
+        READY/UNKNOWN state happened to be persisted from before this
+        connect attempt.
+        """
+        with self._uow_factory() as uow:
+            account = uow.portal_accounts.get_default()
+            if account is None or account.id is None:
+                return
+            account_id = account.id
+        self._mark_session_checked(account_id, SessionStatus.ERROR, datetime.now(UTC), message)
 
     def _mark_session_checked(
         self, account_id: int, status: SessionStatus, checked_at: datetime, error: str | None

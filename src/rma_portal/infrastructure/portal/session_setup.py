@@ -40,30 +40,43 @@ from rma_portal.infrastructure.portal.profile_lock import (
 
 logger = logging.getLogger(__name__)
 
-OpenAndWait = Callable[[Settings], Awaitable[None]]
+OpenAndWait = Callable[..., Awaitable[None]]
+OnTeardownUnconfirmed = Callable[[], None]
 
 _TEARDOWN_TIMEOUT_SECONDS = 30.0
 
 
 async def launch_visible_browser_and_wait(
-    settings: Settings, *, teardown_timeout_seconds: float = _TEARDOWN_TIMEOUT_SECONDS
+    settings: Settings,
+    *,
+    teardown_timeout_seconds: float = _TEARDOWN_TIMEOUT_SECONDS,
+    on_teardown_unconfirmed: OnTeardownUnconfirmed | None = None,
 ) -> None:
     """Open the visible persistent profile and block until it is closed.
 
     Does **not** acquire the profile lock itself -- callers do that, since
     what happens on a lock conflict differs (a printed message for the CLI
-    fallback vs. a silent, loggable skip for the in-app connector). A
-    caller that catches :class:`BrowserTeardownError` from this function
-    must not release that lock either -- it must call
-    ``profile_lock.mark_profile_teardown_unconfirmed`` instead, the same
-    way ``CamoufoxPortalReader.__aexit__`` already does for the background
-    reader's own browser.
+    fallback vs. a silent, loggable skip for the in-app connector).
 
     Browser close (teardown) is bounded independently of the employee's
     own wait for the window to close (which is deliberately unbounded --
     see ``_wait_until_closed``): the same reasoning as
     ``SyncAgreementQueue.verify_session`` applies here -- a stalled
     ``AsyncCamoufox`` close must not leave CONNECTING stuck forever.
+
+    A caller must keep the profile lock it holds unreleased whenever
+    cleanup cannot be confirmed -- not just when this function raises
+    :class:`BrowserTeardownError`, which it can only safely do when
+    nothing else is already propagating from the body above (most
+    commonly a cancellation from ``SessionConnector.shutdown()``, which
+    must win instead of being replaced -- see the module docstring on
+    cancellation; a navigation failure before the window ever closes is
+    the same situation). ``on_teardown_unconfirmed``, if given, is called
+    synchronously whenever cleanup cannot be confirmed regardless of any
+    of that -- a caller passes something like ``lambda:
+    mark_profile_teardown_unconfirmed(lock_path, lock, reason)`` bound to
+    the lock it holds, so the profile lock protection applies in every
+    case, not only the one where raising is also safe.
     """
     settings.browser_profile_dir.mkdir(parents=True, exist_ok=True)
     manager = AsyncCamoufox(
@@ -91,12 +104,14 @@ async def launch_visible_browser_and_wait(
             )
         except Exception:  # noqa: BLE001 - reported to the caller below, not swallowed
             logger.exception("échec du nettoyage du navigateur de connexion visible")
+            if on_teardown_unconfirmed is not None:
+                on_teardown_unconfirmed()
             if body_succeeded:
                 # Nothing else is propagating from the try body -- safe to
                 # raise this as the method's own outcome. If something
                 # *is* already propagating (most commonly a cancellation
                 # from SessionConnector.shutdown()), that exception must
-                # win instead -- see the module docstring on cancellation.
+                # win instead -- see the docstring above.
                 raise BrowserTeardownError(
                     "Le nettoyage du navigateur de connexion n'a pas pu être confirmé "
                     f"après {teardown_timeout_seconds:.0f}s."
@@ -127,11 +142,13 @@ async def run_session_setup(
     try:
         with acquire_profile_lock(settings.browser_lock_path) as lock:
             try:
-                await open_and_wait(settings)
-            except BrowserTeardownError:
-                mark_profile_teardown_unconfirmed(
-                    settings.browser_lock_path, lock, "configuration manuelle de la session"
+                await open_and_wait(
+                    settings,
+                    on_teardown_unconfirmed=lambda: mark_profile_teardown_unconfirmed(
+                        settings.browser_lock_path, lock, "configuration manuelle de la session"
+                    ),
                 )
+            except BrowserTeardownError:
                 print(
                     "Le navigateur s'est fermé, mais son nettoyage n'a pas pu être "
                     "confirmé. Le profil restera indisponible tant que cet outil ou le "

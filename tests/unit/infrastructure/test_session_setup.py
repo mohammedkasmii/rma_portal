@@ -24,7 +24,7 @@ class _RecordingOpenAndWait:
         self.calls = 0
         self.received_settings: list[Settings] = []
 
-    async def __call__(self, settings: Settings) -> None:
+    async def __call__(self, settings: Settings, *, on_teardown_unconfirmed=None) -> None:
         self.calls += 1
         self.received_settings.append(settings)
 
@@ -234,13 +234,91 @@ async def test_launch_visible_browser_and_wait_raises_when_teardown_stalls(tmp_p
         await asyncio.sleep(0)
         context.close_via_context_event()
 
+    marked: list[bool] = []
     with pytest.raises(session_setup.BrowserTeardownError):
         await asyncio.wait_for(
             asyncio.gather(
                 session_setup.launch_visible_browser_and_wait(
-                    settings, teardown_timeout_seconds=0.05
+                    settings,
+                    teardown_timeout_seconds=0.05,
+                    on_teardown_unconfirmed=lambda: marked.append(True),
                 ),
                 close_soon(),
             ),
             timeout=1.0,
         )
+    assert marked == [True]
+
+
+class _FailingGotoPage(_FakePage):
+    async def goto(self, url: str, wait_until: str | None = None) -> None:
+        raise RuntimeError("navigation failed (test)")
+
+
+@pytest.mark.asyncio
+async def test_launch_visible_browser_and_wait_marks_teardown_unconfirmed_on_navigation_failure(
+    tmp_path, monkeypatch
+):
+    """Regression: on_teardown_unconfirmed must fire even when navigation
+    itself failed before the window ever closed (body_succeeded stays
+    False) and cleanup then also stalls -- the profile-lock protection
+    must not depend on BrowserTeardownError being raised, which only
+    happens when nothing else (here, the navigation failure) is already
+    propagating. The original navigation error must still be what
+    propagates, not BrowserTeardownError."""
+    settings = Settings(data_dir=tmp_path / "rma-portal-data")
+    context = _FakeContext(pages=[_FailingGotoPage()])
+    gate = asyncio.Event()  # deliberately never set: teardown also stalls
+    monkeypatch.setattr(
+        session_setup, "AsyncCamoufox", lambda **kwargs: _StallingManager(context, gate)
+    )
+
+    marked: list[bool] = []
+    with pytest.raises(RuntimeError, match="navigation failed"):
+        await asyncio.wait_for(
+            session_setup.launch_visible_browser_and_wait(
+                settings,
+                teardown_timeout_seconds=0.05,
+                on_teardown_unconfirmed=lambda: marked.append(True),
+            ),
+            timeout=1.0,
+        )
+
+    assert marked == [True]
+
+
+@pytest.mark.asyncio
+async def test_launch_visible_browser_and_wait_marks_teardown_unconfirmed_when_cancelled(
+    tmp_path, monkeypatch
+):
+    """Regression: cancellation (e.g. SessionConnector.shutdown() closing
+    the app while the login window is still open) must still leave the
+    profile marked unconfirmed if cleanup also stalls -- the original
+    CancelledError must still be what propagates (never replaced by
+    BrowserTeardownError, which would break callers relying on
+    contextlib.suppress(asyncio.CancelledError)), but the lock protection
+    must apply regardless."""
+    settings = Settings(data_dir=tmp_path / "rma-portal-data")
+    # The employee never closes the window, and the browser-manager
+    # teardown also never completes -- both gates stay unset.
+    context = _FakeContext(pages=[_FakePage()])
+    teardown_gate = asyncio.Event()
+    monkeypatch.setattr(
+        session_setup, "AsyncCamoufox", lambda **kwargs: _StallingManager(context, teardown_gate)
+    )
+
+    marked: list[bool] = []
+    task = asyncio.create_task(
+        session_setup.launch_visible_browser_and_wait(
+            settings,
+            teardown_timeout_seconds=0.05,
+            on_teardown_unconfirmed=lambda: marked.append(True),
+        )
+    )
+    await asyncio.sleep(0)  # let it start waiting on _wait_until_closed
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=1.0)
+
+    assert marked == [True]

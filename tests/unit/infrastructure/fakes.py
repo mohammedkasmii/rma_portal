@@ -26,7 +26,7 @@ class FakeOpenAndWait:
         self._closed.set()  # default: "closes" instantly, a harmless no-op
         self._loop: asyncio.AbstractEventLoop | None = None
 
-    async def __call__(self, settings: Settings) -> None:
+    async def __call__(self, settings: Settings, *, on_teardown_unconfirmed=None) -> None:
         self.calls += 1
         self._loop = asyncio.get_running_loop()
         await self._closed.wait()

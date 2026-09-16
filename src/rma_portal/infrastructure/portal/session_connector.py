@@ -56,8 +56,14 @@ logger = logging.getLogger(__name__)
 
 VerifySession = Callable[[float], Awaitable[bool]]
 RunSync = Callable[[], Awaitable[object]]
+MarkLoginTeardownFailed = Callable[[str], Awaitable[object]]
 
 _DEFAULT_VERIFY_TIMEOUT_SECONDS = 45.0
+
+_LOGIN_TEARDOWN_FAILED_MESSAGE = (
+    "La fenêtre de connexion OmegaFlow s'est fermée, mais son nettoyage n'a pas pu être "
+    "confirmé ; le profil reste indisponible jusqu'au redémarrage du Portail RMA."
+)
 
 
 class SessionConnector:
@@ -67,12 +73,14 @@ class SessionConnector:
         *,
         verify_session: VerifySession,
         run_sync: RunSync,
+        mark_login_teardown_failed: MarkLoginTeardownFailed,
         verify_timeout_seconds: float = _DEFAULT_VERIFY_TIMEOUT_SECONDS,
         open_and_wait: OpenAndWait = launch_visible_browser_and_wait,
     ) -> None:
         self._settings = settings
         self._verify_session = verify_session
         self._run_sync = run_sync
+        self._mark_login_teardown_failed = mark_login_teardown_failed
         self._verify_timeout_seconds = verify_timeout_seconds
         self._open_and_wait = open_and_wait
         self._login_task: asyncio.Task[None] | None = None
@@ -138,22 +146,34 @@ class SessionConnector:
             with acquire_profile_lock(self._settings.browser_lock_path) as lock:
                 logger.info("login browser opened")
                 try:
-                    await self._open_and_wait(self._settings)
-                except BrowserTeardownError:
-                    # The window closed normally, but its own bounded
-                    # cleanup could not be confirmed -- never let the
-                    # `with` block above release the lock in that case (a
-                    # fresh attempt could otherwise race a browser process
-                    # that might still be running against this profile).
-                    mark_profile_teardown_unconfirmed(
-                        self._settings.browser_lock_path,
-                        lock,
-                        "fermeture de la fenêtre de connexion",
+                    await self._open_and_wait(
+                        self._settings,
+                        # Called synchronously whenever cleanup cannot be
+                        # confirmed -- whether the window closed normally
+                        # and only cleanup itself stalled (the
+                        # BrowserTeardownError case below), navigation
+                        # failed before that, or this whole method is
+                        # itself being cancelled (e.g. app shutdown). Never
+                        # let the `with` block above release the lock in
+                        # any of those cases: a fresh attempt could
+                        # otherwise race a browser process that might
+                        # still be running against this profile.
+                        on_teardown_unconfirmed=lambda: mark_profile_teardown_unconfirmed(
+                            self._settings.browser_lock_path,
+                            lock,
+                            "fermeture de la fenêtre de connexion",
+                        ),
                     )
+                except BrowserTeardownError:
                     logger.error(
                         "login window cleanup failed/timed out elapsed=%.1fs",
                         time.monotonic() - started,
                     )
+                    # Without this, build_session_view falls back to
+                    # whatever READY/UNKNOWN state was persisted from
+                    # before this attempt -- the dashboard would show no
+                    # sign anything went wrong at all.
+                    await self._mark_login_teardown_failed(_LOGIN_TEARDOWN_FAILED_MESSAGE)
                     return
                 logger.info("login window closed elapsed=%.1fs", time.monotonic() - started)
         except BrowserProfileLockedError:

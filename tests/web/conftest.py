@@ -34,6 +34,7 @@ def application(settings, uow_factory, portal_account_id, fake_open_and_wait) ->
         settings,
         verify_session=sync_service.verify_session,
         run_sync=sync_service.execute,
+        mark_login_teardown_failed=sync_service.mark_login_teardown_failed,
         open_and_wait=fake_open_and_wait,
     )
     settings.session_secret = "test-secret-not-for-production"

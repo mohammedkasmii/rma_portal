@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 from starlette.testclient import TestClient
 
+from rma_portal.application.dto import BrowserTeardownError
 from rma_portal.domain.enums import PollStatus, SessionStatus
 from rma_portal.infrastructure.portal.session_connector import SessionConnector
 from rma_portal.web.app import create_app
@@ -340,6 +341,7 @@ def test_dashboard_and_health_stay_responsive_while_verification_is_in_flight(
         application.settings,
         verify_session=verify,
         run_sync=application.sync_service.execute,
+        mark_login_teardown_failed=application.sync_service.mark_login_teardown_failed,
         open_and_wait=fake_open_and_wait,
     )
     fake_open_and_wait.hold_open()
@@ -367,3 +369,42 @@ def test_dashboard_and_health_stay_responsive_while_verification_is_in_flight(
         assert elapsed < 1.0  # never waited on the in-flight verification
 
         verify.release()
+
+
+def test_login_teardown_failure_shows_error_and_restart_instruction_on_dashboard(
+    application, employee_user
+):
+    """Regression: build_session_view must reflect a login-browser
+    teardown failure immediately -- previously SessionConnector._run_login
+    only marked the profile unavailable and returned, so the dashboard
+    kept showing whatever READY/UNKNOWN state was persisted from before
+    this connect attempt, with no sign anything had gone wrong."""
+
+    async def open_and_wait_then_fail_teardown(settings, *, on_teardown_unconfirmed=None) -> None:
+        if on_teardown_unconfirmed is not None:
+            on_teardown_unconfirmed()
+        raise BrowserTeardownError("teardown stalled (test)")
+
+    application.session_connector = SessionConnector(
+        application.settings,
+        verify_session=application.sync_service.verify_session,
+        run_sync=application.sync_service.execute,
+        mark_login_teardown_failed=application.sync_service.mark_login_teardown_failed,
+        open_and_wait=open_and_wait_then_fail_teardown,
+    )
+
+    with TestClient(create_app(application)) as client:
+        login(client, "employee", EMPLOYEE_PASSWORD)
+        response = client.post("/session/connect", headers={"origin": "http://testserver"})
+        assert response.status_code == 200
+
+        deadline = time.monotonic() + 2.0
+        while application.session_connector.is_active:
+            assert time.monotonic() < deadline, "login phase never finished"
+            time.sleep(0.01)
+
+        dashboard = client.get("/")
+
+        assert "La dernière synchronisation a échoué" in dashboard.text
+        assert "redémarrage du Portail RMA" in dashboard.text
+        assert "Réessayer" in dashboard.text

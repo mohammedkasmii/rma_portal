@@ -68,6 +68,7 @@ def build_application(settings: Settings | None = None) -> Application:
         settings,
         verify_session=sync_service.verify_session,
         run_sync=sync_service.execute,
+        mark_login_teardown_failed=sync_service.mark_login_teardown_failed,
         verify_timeout_seconds=settings.session_verify_timeout_seconds,
     )
 

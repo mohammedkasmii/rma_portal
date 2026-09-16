@@ -67,7 +67,7 @@ class _ControllableOpenAndWait:
         self.calls = 0
         self.close_event = asyncio.Event()
 
-    async def __call__(self, settings: Settings) -> None:
+    async def __call__(self, settings: Settings, *, on_teardown_unconfirmed=None) -> None:
         self.calls += 1
         await self.close_event.wait()
 
@@ -100,13 +100,31 @@ class _Counter:
         return None
 
 
+class _MessageRecorder:
+    """Test double for ``mark_login_teardown_failed`` (takes one str arg,
+    unlike ``_Counter``'s no-arg ``run_sync``/``verify_session`` shape)."""
+
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    async def __call__(self, message: str) -> None:
+        self.messages.append(message)
+
+
 def _connector(
-    tmp_path, *, open_and_wait, verify_session=None, run_sync=None, **kwargs
+    tmp_path,
+    *,
+    open_and_wait,
+    verify_session=None,
+    run_sync=None,
+    mark_login_teardown_failed=None,
+    **kwargs,
 ) -> SessionConnector:
     return SessionConnector(
         _settings(tmp_path),
         verify_session=verify_session or _ControllableVerify(),
         run_sync=run_sync or _Counter(),
+        mark_login_teardown_failed=mark_login_teardown_failed or _MessageRecorder(),
         open_and_wait=open_and_wait,
         **kwargs,
     )
@@ -273,7 +291,11 @@ async def test_profile_lock_conflict_is_skipped_without_verifying(tmp_path):
         fake = _ControllableOpenAndWait()
         verify = _ControllableVerify()
         connector = SessionConnector(
-            settings, verify_session=verify, run_sync=_Counter(), open_and_wait=fake
+            settings,
+            verify_session=verify,
+            run_sync=_Counter(),
+            mark_login_teardown_failed=_MessageRecorder(),
+            open_and_wait=fake,
         )
 
         connector.start()
@@ -368,7 +390,11 @@ async def test_profile_lock_is_released_before_verification_runs(tmp_path):
         return True
 
     connector = SessionConnector(
-        settings, verify_session=verify_session, run_sync=_Counter(), open_and_wait=fake
+        settings,
+        verify_session=verify_session,
+        run_sync=_Counter(),
+        mark_login_teardown_failed=_MessageRecorder(),
+        open_and_wait=fake,
     )
     connector.start()
     await asyncio.sleep(0)
@@ -389,6 +415,7 @@ async def test_closing_without_login_results_in_auth_required(tmp_path, uow_fact
         _settings(tmp_path),
         verify_session=sync_service.verify_session,
         run_sync=sync_service.execute,
+        mark_login_teardown_failed=sync_service.mark_login_teardown_failed,
         open_and_wait=fake,
     )
 
@@ -428,6 +455,7 @@ async def test_successful_login_results_in_ready_before_the_full_sync_finishes(
         _settings(tmp_path),
         verify_session=sync_service.verify_session,
         run_sync=gated_run_sync,
+        mark_login_teardown_failed=sync_service.mark_login_teardown_failed,
         open_and_wait=fake,
     )
 
@@ -470,6 +498,7 @@ async def test_later_scheduled_poll_flips_ready_to_auth_required_and_preserves_d
         _settings(tmp_path),
         verify_session=sync_service.verify_session,
         run_sync=sync_service.execute,
+        mark_login_teardown_failed=sync_service.mark_login_teardown_failed,
         open_and_wait=fake,
     )
 
@@ -508,12 +537,23 @@ async def test_login_teardown_failure_ends_connecting_and_marks_the_profile_unav
     (not silently release the lock) until the application restarts."""
     settings = _settings(tmp_path)
 
-    async def open_and_wait_then_fail_teardown(_settings: Settings) -> None:
+    marked: list[bool] = []
+
+    async def open_and_wait_then_fail_teardown(
+        _settings: Settings, *, on_teardown_unconfirmed=None
+    ) -> None:
+        if on_teardown_unconfirmed is not None:
+            on_teardown_unconfirmed()
+            marked.append(True)
         raise BrowserTeardownError("teardown stalled (test)")
 
     verify = _ControllableVerify()
+    mark_failed = _MessageRecorder()
     connector = _connector(
-        tmp_path, open_and_wait=open_and_wait_then_fail_teardown, verify_session=verify
+        tmp_path,
+        open_and_wait=open_and_wait_then_fail_teardown,
+        verify_session=verify,
+        mark_login_teardown_failed=mark_failed,
     )
 
     connector.start()
@@ -521,6 +561,8 @@ async def test_login_teardown_failure_ends_connecting_and_marks_the_profile_unav
 
     assert connector.is_verifying is False
     assert verify.calls == []  # never started verification
+    assert marked == [True]  # on_teardown_unconfirmed was invoked
+    assert len(mark_failed.messages) == 1  # build_session_view now sees ERROR
 
     with (
         pytest.raises(BrowserProfileLockedError, match="indisponible"),
