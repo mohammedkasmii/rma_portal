@@ -160,6 +160,24 @@ def test_same_origin_check_rejects_foreign_origin(client, employee_user, uow_fac
     assert response.status_code == 403
 
 
+def test_same_origin_check_rejects_prefix_bypass_attempt(
+    client, employee_user, uow_factory, portal_account_id
+):
+    """A naive Origin check (str.startswith) would wrongly accept an origin
+    that merely starts with the server's own origin, e.g.
+    'http://testserver.evil.example' starts with 'http://testserver'.
+    """
+    dossier_id = _seed_dossier(uow_factory, portal_account_id, "a")
+    login(client, "employee", EMPLOYEE_PASSWORD)
+
+    response = client.post(
+        f"/dossiers/{dossier_id}/status",
+        data={"status": "IN_PROGRESS", "expected_version": "1"},
+        headers={"origin": "http://testserver.evil.example"},
+    )
+    assert response.status_code == 403
+
+
 def test_session_banner_shown_when_auth_required(client, employee_user, uow_factory, portal_account_id):
     with uow_factory() as uow:
         uow.portal_accounts.mark_poll_finished(

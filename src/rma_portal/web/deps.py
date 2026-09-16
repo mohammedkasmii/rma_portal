@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from urllib.parse import urlsplit
+
 from fastapi import Depends, HTTPException, Request, status
 
 from rma_portal.bootstrap import Application
@@ -56,6 +58,6 @@ def check_same_origin(request: Request) -> None:
     header = request.headers.get("origin") or request.headers.get("referer")
     if not header:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Origine manquante.")
-    expected = f"{request.url.scheme}://{request.url.netloc}"
-    if not header.startswith(expected):
+    parsed = urlsplit(header)
+    if (parsed.scheme, parsed.netloc) != (request.url.scheme, request.url.netloc):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Origine invalide.")
