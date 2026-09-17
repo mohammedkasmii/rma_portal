@@ -44,6 +44,7 @@ from rma_portal.infrastructure.portal.session_state import (
     origin_of,
     restore_session_state,
 )
+from rma_portal.observability import log_stage, strip_query
 
 logger = logging.getLogger(__name__)
 
@@ -142,28 +143,30 @@ class CamoufoxPortalReader:
         self._lock = self._lock_cm.__enter__()
         try:
             self._profile_dir.mkdir(parents=True, exist_ok=True)
-            self._manager = AsyncCamoufox(
-                persistent_context=True,
-                user_data_dir=str(self._profile_dir),
-                headless=self._headless,
-                humanize=True,
-                os="windows",
-                geoip=False,
-                exclude_addons=[DefaultAddons.UBO],
-                locale=self._locale,
-                timezone_id=self._timezone_id,
-                firefox_user_prefs={"network.cookie.cookieBehavior": 4},
-            )
-            self._context = await self._manager.__aenter__()
-            await self._context.route("**/*", self._read_only_route)
+            with log_stage(logger, "browser_startup"):
+                self._manager = AsyncCamoufox(
+                    persistent_context=True,
+                    user_data_dir=str(self._profile_dir),
+                    headless=self._headless,
+                    humanize=True,
+                    os="windows",
+                    geoip=False,
+                    exclude_addons=[DefaultAddons.UBO],
+                    locale=self._locale,
+                    timezone_id=self._timezone_id,
+                    firefox_user_prefs={"network.cookie.cookieBehavior": 4},
+                )
+                self._context = await self._manager.__aenter__()
+                await self._context.route("**/*", self._read_only_route)
             # Explicit restore before any navigation happens: the
             # persistent Firefox profile alone does not carry sessionStorage
             # forward across a process restart (by spec), and OmegaFlow's
             # own authenticated render depends on it -- see session_state.py.
-            saved_state = load_session_state(self._session_state_path)
-            await restore_session_state(
-                self._context, saved_state, origin=origin_of(self._base_url)
-            )
+            with log_stage(logger, "session_restore"):
+                saved_state = load_session_state(self._session_state_path)
+                await restore_session_state(
+                    self._context, saved_state, origin=origin_of(self._base_url)
+                )
             self._page = (
                 self._context.pages[0] if self._context.pages else await self._context.new_page()
             )
@@ -182,7 +185,8 @@ class CamoufoxPortalReader:
         manager_closed = False
         try:
             if self._manager is not None:
-                await self._manager.__aexit__(exc_type, exc, traceback)
+                with log_stage(logger, "browser_cleanup"):
+                    await self._manager.__aexit__(exc_type, exc, traceback)
             manager_closed = True
         finally:
             self._context = None
@@ -210,7 +214,9 @@ class CamoufoxPortalReader:
         )
         if blocked:
             self.blocked_write_attempts.append(f"{method} {request.url}")
-            logger.warning("blocked non-read-only OmegaFlow request: %s %s", method, url)
+            logger.warning(
+                "blocked non-read-only OmegaFlow request: %s %s", method, strip_query(request.url)
+            )
             await route.abort("blockedbyclient")
             return
         await route.continue_()
@@ -248,22 +254,23 @@ class CamoufoxPortalReader:
         """
         view = page.locator("#view_1874")
 
-        procedure = view.locator("#kn-conn-1-field_219")
-        await procedure.wait_for(state="attached", timeout=15_000)
-        await procedure.select_option(value=self._procedure_value, force=True, timeout=15_000)
+        with log_stage(logger, "garage_agree_selection"):
+            procedure = view.locator("#kn-conn-1-field_219")
+            await procedure.wait_for(state="attached", timeout=15_000)
+            await procedure.select_option(value=self._procedure_value, force=True, timeout=15_000)
 
-        actual_value = await procedure.input_value()
-        if actual_value != self._procedure_value:
-            raise PortalReadError(
-                "Le filtre Garage agréé n'a pas pu être appliqué "
-                f"(valeur obtenue: {actual_value!r})."
+            actual_value = await procedure.input_value()
+            if actual_value != self._procedure_value:
+                raise PortalReadError(
+                    "Le filtre Garage agréé n'a pas pu être appliqué "
+                    f"(valeur obtenue: {actual_value!r})."
+                )
+            await procedure.evaluate(
+                "el => {"
+                " el.dispatchEvent(new Event('input', {bubbles: true}));"
+                " el.dispatchEvent(new Event('change', {bubbles: true}));"
+                "}"
             )
-        await procedure.evaluate(
-            "el => {"
-            " el.dispatchEvent(new Event('input', {bubbles: true}));"
-            " el.dispatchEvent(new Event('change', {bubbles: true}));"
-            "}"
-        )
 
         await self._submit_search(page)
 
@@ -282,31 +289,32 @@ class CamoufoxPortalReader:
         dossiers is valid and must produce a COMPLETE snapshot with zero
         rows (see docs/omegaflow-contract.md).
         """
-        button = page.locator(_SEARCH_SUBMIT_SELECTOR)
-        try:
-            await button.wait_for(state="visible", timeout=15_000)
-        except Exception as exc:
-            raise PortalReadError(
-                "Bouton de recherche OmegaFlow introuvable (étape: affichage du bouton, "
-                f"sélecteur: {_SEARCH_SUBMIT_SELECTOR!r})."
-            ) from exc
+        with log_stage(logger, "search_submission", selector=_SEARCH_SUBMIT_SELECTOR):
+            button = page.locator(_SEARCH_SUBMIT_SELECTOR)
+            try:
+                await button.wait_for(state="visible", timeout=15_000)
+            except Exception as exc:
+                raise PortalReadError(
+                    "Bouton de recherche OmegaFlow introuvable (étape: affichage du bouton, "
+                    f"sélecteur: {_SEARCH_SUBMIT_SELECTOR!r})."
+                ) from exc
 
-        await button.click()
+            await button.click()
 
-        loading_button = page.locator(f"{_SEARCH_SUBMIT_SELECTOR}.is-loading")
-        # Best-effort: the AJAX request may already be done by the time this
-        # checks, in which case there is nothing to observe starting.
-        with contextlib.suppress(Exception):
-            await loading_button.wait_for(state="attached", timeout=2_000)
-        try:
-            await loading_button.wait_for(state="detached", timeout=20_000)
-        except Exception as exc:
-            raise PortalReadError(
-                "Délai dépassé en attendant la fin de la recherche OmegaFlow "
-                f"(étape: recherche, sélecteur: {_SEARCH_SUBMIT_SELECTOR!r})."
-            ) from exc
+            loading_button = page.locator(f"{_SEARCH_SUBMIT_SELECTOR}.is-loading")
+            # Best-effort: the AJAX request may already be done by the time this
+            # checks, in which case there is nothing to observe starting.
+            with contextlib.suppress(Exception):
+                await loading_button.wait_for(state="attached", timeout=2_000)
+            try:
+                await loading_button.wait_for(state="detached", timeout=20_000)
+            except Exception as exc:
+                raise PortalReadError(
+                    "Délai dépassé en attendant la fin de la recherche OmegaFlow "
+                    f"(étape: recherche, sélecteur: {_SEARCH_SUBMIT_SELECTOR!r})."
+                ) from exc
 
-        await self._settle(page)
+            await self._settle(page)
 
     async def _go_to_page(self, page: Any, page_number: int) -> None:
         select = page.locator("#view_1874 .kn-page-select").first
@@ -322,9 +330,10 @@ class CamoufoxPortalReader:
         page = self._require_page()
         pages_collected: list[QueueSnapshot] = []
         try:
-            await page.goto(self._start_route, wait_until="domcontentloaded", timeout=60_000)
-            await self._assert_authenticated()
-            await page.locator("#view_1874").wait_for(state="visible", timeout=45_000)
+            with log_stage(logger, "queue_navigation"):
+                await page.goto(self._start_route, wait_until="domcontentloaded", timeout=60_000)
+                await self._assert_authenticated()
+                await page.locator("#view_1874").wait_for(state="visible", timeout=45_000)
             await self._apply_garage_agree_filter(page)
 
             html = await page.content()
@@ -333,10 +342,11 @@ class CamoufoxPortalReader:
             total_pages = parse_page_count(html)
 
             for page_number in range(2, total_pages + 1):
-                await self._go_to_page(page, page_number)
-                html = await page.content()
-                await self._assert_authenticated()
-                pages_collected.append(parse_queue_page(html))
+                with log_stage(logger, "pagination_page", page=page_number, total=total_pages):
+                    await self._go_to_page(page, page_number)
+                    html = await page.content()
+                    await self._assert_authenticated()
+                    pages_collected.append(parse_queue_page(html))
         except PortalAuthRequiredError:
             raise
         except PortalReadError:
@@ -371,12 +381,13 @@ class CamoufoxPortalReader:
         timeout/ERROR, never a false READY.
         """
         page = self._require_page()
-        await page.goto(self._start_route, wait_until="domcontentloaded", timeout=30_000)
-        while True:
-            await self._assert_authenticated()
-            if await is_authenticated_view_present(page):
-                return
-            await page.wait_for_timeout(_VERIFY_POLL_INTERVAL_MS)
+        with log_stage(logger, "auth_verification"):
+            await page.goto(self._start_route, wait_until="domcontentloaded", timeout=30_000)
+            while True:
+                await self._assert_authenticated()
+                if await is_authenticated_view_present(page):
+                    return
+                await page.wait_for_timeout(_VERIFY_POLL_INTERVAL_MS)
 
     async def read_dossier_details(self, dossier: PortalDossierRef) -> DossierDetails:
         page = self._require_page()

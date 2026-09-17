@@ -102,6 +102,45 @@ La synchronisation avec OmegaFlow s'exécute automatiquement toutes les 5
 minutes tant que le serveur tourne ; un bouton « Actualiser maintenant » est
 aussi disponible sur le tableau de bord.
 
+## Journaux (logs)
+
+Le portail écrit des journaux techniques (connexions OmegaFlow,
+synchronisations, requêtes web lentes ou en erreur) en plus de l'affichage
+console d'Uvicorn :
+
+- **Fichier** : `%LOCALAPPDATA%\RMAPortal\logs\rma-portal.log` (encodage
+  UTF-8, rotation automatique à 5 Mo, 3 fichiers de sauvegarde conservés).
+- **Console** : les mêmes messages s'affichent aussi dans le terminal, à
+  côté des lignes d'Uvicorn, pendant que `Démarrer_Portail_RMA.bat` tourne.
+
+Pour suivre les journaux en direct (PowerShell) :
+
+```powershell
+Get-Content "$env:LOCALAPPDATA\RMAPortal\logs\rma-portal.log" -Tail 100 -Wait
+```
+
+Chaque tentative de connexion OmegaFlow et chaque synchronisation reçoit un
+identifiant de corrélation (`operation_id`, par exemple `sync-3f9a1c2b` pour
+une synchronisation ou `conn-7ab2e910` pour une connexion) visible sur
+chaque ligne du journal. Pour retrouver une synchronisation en échec ou
+anormalement lente :
+
+1. Repérez la ligne `stage=synchronization outcome=FAILED` (ou une durée
+   `elapsed_ms`/`duration_ms` très élevée sur la ligne de résumé
+   `stage=synchronization outcome=...`).
+2. Notez son `operation_id`.
+3. Filtrez le fichier sur cet identifiant pour voir le déroulé complet
+   (démarrage du navigateur, restauration de session, navigation,
+   sélection du filtre, recherche, pagination, lecture des détails,
+   enregistrement en base, nettoyage du navigateur) :
+
+```powershell
+Select-String -Path "$env:LOCALAPPDATA\RMAPortal\logs\rma-portal.log" -Pattern "operation_id=sync-3f9a1c2b"
+```
+
+Une étape bloquée apparaît comme un `stage=... outcome=START` sans ligne
+`outcome=OK`/`outcome=FAILED` correspondante juste après.
+
 ## Récupération / dépannage
 
 | Symptôme | Action |

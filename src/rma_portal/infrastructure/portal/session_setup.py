@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from collections.abc import Awaitable, Callable
 
 from camoufox.addons import DefaultAddons
@@ -43,6 +44,7 @@ from rma_portal.infrastructure.portal.session_state import (
     origin_of,
     save_session_state,
 )
+from rma_portal.observability import log_stage, new_operation_id, operation_context
 
 logger = logging.getLogger(__name__)
 
@@ -85,23 +87,28 @@ async def launch_visible_browser_and_wait(
     case, not only the one where raising is also safe.
     """
     settings.browser_profile_dir.mkdir(parents=True, exist_ok=True)
-    manager = AsyncCamoufox(
-        persistent_context=True,
-        user_data_dir=str(settings.browser_profile_dir),
-        headless=False,
-        os="windows",
-        geoip=False,
-        exclude_addons=[DefaultAddons.UBO],
-        locale=settings.portal_locale,
-        timezone_id=settings.portal_timezone,
-        firefox_user_prefs={"network.cookie.cookieBehavior": 4},
-    )
-    context = await manager.__aenter__()
+    connection_started = time.perf_counter()
+    with log_stage(logger, "browser_startup"):
+        manager = AsyncCamoufox(
+            persistent_context=True,
+            user_data_dir=str(settings.browser_profile_dir),
+            headless=False,
+            os="windows",
+            geoip=False,
+            exclude_addons=[DefaultAddons.UBO],
+            locale=settings.portal_locale,
+            timezone_id=settings.portal_timezone,
+            firefox_user_prefs={"network.cookie.cookieBehavior": 4},
+        )
+        context = await manager.__aenter__()
     body_succeeded = False
+    employee_wait_seconds = 0.0
     try:
         page = context.pages[0] if context.pages else await context.new_page()
         await page.goto(settings.omegaflow_start_route, wait_until="domcontentloaded")
+        wait_started = time.perf_counter()
         logged_in = await _wait_for_login_or_close(context, page)
+        employee_wait_seconds = time.perf_counter() - wait_started
         if logged_in:
             # Captured -- and saved -- while the browser is still open,
             # *before* anything closes it: the persistent Firefox profile
@@ -115,11 +122,11 @@ async def launch_visible_browser_and_wait(
         body_succeeded = True
     finally:
         try:
-            await asyncio.wait_for(
-                manager.__aexit__(None, None, None), timeout=teardown_timeout_seconds
-            )
-        except Exception:  # noqa: BLE001 - reported to the caller below, not swallowed
-            logger.exception("échec du nettoyage du navigateur de connexion visible")
+            with log_stage(logger, "browser_cleanup", timeout_s=teardown_timeout_seconds):
+                await asyncio.wait_for(
+                    manager.__aexit__(None, None, None), timeout=teardown_timeout_seconds
+                )
+        except Exception:  # noqa: BLE001 - reported via log_stage above, not swallowed
             if on_teardown_unconfirmed is not None:
                 on_teardown_unconfirmed()
             if body_succeeded:
@@ -132,6 +139,16 @@ async def launch_visible_browser_and_wait(
                     "Le nettoyage du navigateur de connexion n'a pas pu être confirmé "
                     f"après {teardown_timeout_seconds:.0f}s."
                 ) from None
+        # Separates time spent waiting on the employee to click through the
+        # login (unbounded, not application processing) from everything
+        # else this function did (startup, capture, cleanup).
+        total_seconds = time.perf_counter() - connection_started
+        processing_seconds = max(total_seconds - employee_wait_seconds, 0.0)
+        logger.info(
+            "connection attempt summary employee_wait_ms=%.1f processing_ms=%.1f",
+            employee_wait_seconds * 1000,
+            processing_seconds * 1000,
+        )
 
 
 _LOGIN_POLL_INTERVAL_SECONDS = 0.5
@@ -182,11 +199,11 @@ async def _capture_and_save_session_state(context, page, settings: Settings) -> 
     connect attempt starts from whatever was saved before, same as if
     this login had never positively completed at all."""
     try:
-        origin = origin_of(settings.omegaflow_base_url)
-        state = await capture_session_state(context, page, origin=origin)
-        save_session_state(settings.session_state_path, state)
-    except Exception:  # noqa: BLE001 - logged, never fails the login/close flow
-        logger.exception("échec de la capture de l'état de session OmegaFlow")
+        with log_stage(logger, "session_capture"):
+            origin = origin_of(settings.omegaflow_base_url)
+            state = await capture_session_state(context, page, origin=origin)
+            save_session_state(settings.session_state_path, state)
+    except Exception:  # noqa: BLE001 - logged by log_stage, never fails the login/close flow
         return
     local_storage_count = sum(len(o.get("localStorage", [])) for o in state.get("origins", []))
     session_storage_count = len(state.get("session_storage", {}).get("items", {}))
@@ -220,30 +237,31 @@ async def run_session_setup(
     )
     print("Fermez la fenêtre du navigateur une fois la connexion terminée.")
 
-    try:
-        with acquire_profile_lock(settings.browser_lock_path) as lock:
-            try:
-                await open_and_wait(
-                    settings,
-                    on_teardown_unconfirmed=lambda: mark_profile_teardown_unconfirmed(
-                        settings.browser_lock_path, lock, "configuration manuelle de la session"
-                    ),
-                )
-            except BrowserTeardownError:
-                print(
-                    "Le navigateur s'est fermé, mais son nettoyage n'a pas pu être "
-                    "confirmé. Le profil restera indisponible tant que cet outil ou le "
-                    "Portail RMA n'auront pas été redémarrés."
-                )
-                return
-    except BrowserProfileLockedError:
-        print(
-            "Impossible de configurer la session : le profil du navigateur "
-            "OmegaFlow est déjà utilisé (synchronisation en cours, ou une "
-            "fenêtre de connexion est déjà ouverte depuis le tableau de "
-            "bord). Réessayez dans quelques minutes."
-        )
-        return
+    with operation_context(new_operation_id("conn")):
+        try:
+            with acquire_profile_lock(settings.browser_lock_path) as lock:
+                try:
+                    await open_and_wait(
+                        settings,
+                        on_teardown_unconfirmed=lambda: mark_profile_teardown_unconfirmed(
+                            settings.browser_lock_path, lock, "configuration manuelle de la session"
+                        ),
+                    )
+                except BrowserTeardownError:
+                    print(
+                        "Le navigateur s'est fermé, mais son nettoyage n'a pas pu être "
+                        "confirmé. Le profil restera indisponible tant que cet outil ou le "
+                        "Portail RMA n'auront pas été redémarrés."
+                    )
+                    return
+        except BrowserProfileLockedError:
+            print(
+                "Impossible de configurer la session : le profil du navigateur "
+                "OmegaFlow est déjà utilisé (synchronisation en cours, ou une "
+                "fenêtre de connexion est déjà ouverte depuis le tableau de "
+                "bord). Réessayez dans quelques minutes."
+            )
+            return
 
     print("Session enregistrée. Vous pouvez démarrer le portail.")
 

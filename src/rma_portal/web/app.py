@@ -7,11 +7,13 @@ and the background poller lifecycle.
 
 from __future__ import annotations
 
+import logging
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -28,7 +30,19 @@ from rma_portal.web.routes import (
     session,
 )
 
+logger = logging.getLogger(__name__)
+
 _WEB_DIR = Path(__file__).parent
+_SLOW_REQUEST_SECONDS = 1.0
+
+
+def _route_template(request: Request) -> str:
+    """The matched route's path *template* (e.g. ``/dossiers/{dossier_id}``)
+    -- never the resolved path, which can carry a dossier id, and never the
+    query string, which is excluded entirely from web-request logging."""
+    route = request.scope.get("route")
+    template = getattr(route, "path", None)
+    return template or request.url.path
 
 
 def create_app(application: Application | None = None) -> FastAPI:
@@ -53,6 +67,32 @@ def create_app(application: Application | None = None) -> FastAPI:
         application.settings.session_secret, application.settings.session_lifetime_hours * 3600
     )
     app.mount("/static", StaticFiles(directory=str(_WEB_DIR / "static")), name="static")
+
+    @app.middleware("http")
+    async def _log_slow_or_failed_requests(request: Request, call_next):
+        started = time.perf_counter()
+        try:
+            response = await call_next(request)
+        except Exception:
+            logger.error(
+                "web_request method=%s route=%s status=ERROR duration_ms=%.1f",
+                request.method,
+                _route_template(request),
+                (time.perf_counter() - started) * 1000,
+                exc_info=True,
+            )
+            raise
+        duration_ms = (time.perf_counter() - started) * 1000
+        if response.status_code >= 400 or duration_ms > _SLOW_REQUEST_SECONDS * 1000:
+            log = logger.error if response.status_code >= 500 else logger.warning
+            log(
+                "web_request method=%s route=%s status=%d duration_ms=%.1f",
+                request.method,
+                _route_template(request),
+                response.status_code,
+                duration_ms,
+            )
+        return response
 
     app.include_router(health.router)
     app.include_router(auth.router)

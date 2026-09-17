@@ -20,6 +20,7 @@ from rma_portal.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWorkFactor
 from rma_portal.infrastructure.portal.camoufox_reader import CamoufoxPortalReaderFactory
 from rma_portal.infrastructure.portal.session_connector import SessionConnector
 from rma_portal.infrastructure.security.password_hasher import Argon2PasswordHasher
+from rma_portal.observability import configure_logging
 
 
 @dataclass(slots=True)
@@ -37,6 +38,7 @@ def build_application(settings: Settings | None = None) -> Application:
     settings = settings or load_settings()
     settings.ensure_directories()
     settings.load_or_create_session_secret()
+    configure_logging(settings)
 
     engine = create_engine_for(settings)
     session_factory = create_session_factory(engine)

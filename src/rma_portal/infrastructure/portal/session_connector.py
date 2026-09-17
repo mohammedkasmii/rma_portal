@@ -51,6 +51,7 @@ from rma_portal.infrastructure.portal.session_setup import (
     OpenAndWait,
     launch_visible_browser_and_wait,
 )
+from rma_portal.observability import ensure_operation_context, new_operation_id, operation_context
 
 logger = logging.getLogger(__name__)
 
@@ -141,77 +142,91 @@ class SessionConnector:
                     await task
 
     async def _run_login(self) -> None:
-        started = time.monotonic()
-        try:
-            with acquire_profile_lock(self._settings.browser_lock_path) as lock:
-                logger.info("login browser opened")
-                try:
-                    await self._open_and_wait(
-                        self._settings,
-                        # Called synchronously whenever cleanup cannot be
-                        # confirmed -- whether the window closed normally
-                        # and only cleanup itself stalled (the
-                        # BrowserTeardownError case below), navigation
-                        # failed before that, or this whole method is
-                        # itself being cancelled (e.g. app shutdown). Never
-                        # let the `with` block above release the lock in
-                        # any of those cases: a fresh attempt could
-                        # otherwise race a browser process that might
-                        # still be running against this profile.
-                        on_teardown_unconfirmed=lambda: mark_profile_teardown_unconfirmed(
-                            self._settings.browser_lock_path,
-                            lock,
-                            "fermeture de la fenêtre de connexion",
-                        ),
+        # Mints the correlation ID for this whole connection attempt --
+        # login, verification and the sync it triggers all inherit it
+        # (asyncio.create_task copies the current contextvars context),
+        # except the sync itself, which always mints its own fresh
+        # "sync-*" ID (see SyncAgreementQueue.execute) since it is its own
+        # tracked operation with its own poll_runs row.
+        with operation_context(new_operation_id("conn")):
+            started = time.perf_counter()
+            try:
+                with acquire_profile_lock(self._settings.browser_lock_path) as lock:
+                    logger.info("stage=connection_login outcome=START")
+                    try:
+                        await self._open_and_wait(
+                            self._settings,
+                            # Called synchronously whenever cleanup cannot be
+                            # confirmed -- whether the window closed normally
+                            # and only cleanup itself stalled (the
+                            # BrowserTeardownError case below), navigation
+                            # failed before that, or this whole method is
+                            # itself being cancelled (e.g. app shutdown). Never
+                            # let the `with` block above release the lock in
+                            # any of those cases: a fresh attempt could
+                            # otherwise race a browser process that might
+                            # still be running against this profile.
+                            on_teardown_unconfirmed=lambda: mark_profile_teardown_unconfirmed(
+                                self._settings.browser_lock_path,
+                                lock,
+                                "fermeture de la fenêtre de connexion",
+                            ),
+                        )
+                    except BrowserTeardownError:
+                        logger.error(
+                            "stage=connection_login outcome=FAILED elapsed_ms=%.1f",
+                            (time.perf_counter() - started) * 1000,
+                        )
+                        # Without this, build_session_view falls back to
+                        # whatever READY/UNKNOWN state was persisted from
+                        # before this attempt -- the dashboard would show no
+                        # sign anything went wrong at all.
+                        await self._mark_login_teardown_failed(_LOGIN_TEARDOWN_FAILED_MESSAGE)
+                        return
+                    logger.info(
+                        "login window closed elapsed_ms=%.1f",
+                        (time.perf_counter() - started) * 1000,
                     )
-                except BrowserTeardownError:
-                    logger.error(
-                        "login window cleanup failed/timed out elapsed=%.1fs",
-                        time.monotonic() - started,
-                    )
-                    # Without this, build_session_view falls back to
-                    # whatever READY/UNKNOWN state was persisted from
-                    # before this attempt -- the dashboard would show no
-                    # sign anything went wrong at all.
-                    await self._mark_login_teardown_failed(_LOGIN_TEARDOWN_FAILED_MESSAGE)
-                    return
-                logger.info("login window closed elapsed=%.1fs", time.monotonic() - started)
-        except BrowserProfileLockedError:
-            logger.info("connexion manuelle ignorée : profil de navigateur déjà utilisé")
-            return
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001 - never let a bad launch crash the app
-            logger.exception("échec inattendu lors de la connexion manuelle OmegaFlow")
-            return
-        logger.info("cleanup completed, lock released elapsed=%.1fs", time.monotonic() - started)
-
-        self._verify_task = asyncio.create_task(
-            self._run_verify(), name="rma-portal-session-verify"
-        )
-
-    async def _run_verify(self) -> None:
-        started = time.monotonic()
-        logger.info("authentication verification started")
-        try:
-            verified = await self._verify_session(self._verify_timeout_seconds)
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001 - verify_session already reports failures itself
-            logger.exception("échec inattendu lors de la vérification de la session")
-            verified = False
-        logger.info(
-            "authentication verification finished ok=%s elapsed=%.1fs",
-            verified,
-            time.monotonic() - started,
-        )
-        if verified:
-            self._sync_task = asyncio.create_task(
-                self._run_sync_task(), name="rma-portal-session-sync"
+            except BrowserProfileLockedError:
+                logger.info("connexion manuelle ignorée : profil de navigateur déjà utilisé")
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - never let a bad launch crash the app
+                logger.exception("échec inattendu lors de la connexion manuelle OmegaFlow")
+                return
+            logger.info(
+                "stage=connection_login outcome=OK elapsed_ms=%.1f",
+                (time.perf_counter() - started) * 1000,
             )
 
+            self._verify_task = asyncio.create_task(
+                self._run_verify(), name="rma-portal-session-verify"
+            )
+
+    async def _run_verify(self) -> None:
+        with ensure_operation_context("verify"):
+            started = time.perf_counter()
+            logger.info("stage=connection_verify outcome=START")
+            try:
+                verified = await self._verify_session(self._verify_timeout_seconds)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - verify_session already reports failures itself
+                logger.exception("échec inattendu lors de la vérification de la session")
+                verified = False
+            logger.info(
+                "stage=connection_verify outcome=%s elapsed_ms=%.1f",
+                "OK" if verified else "FAILED",
+                (time.perf_counter() - started) * 1000,
+            )
+            if verified:
+                self._sync_task = asyncio.create_task(
+                    self._run_sync_task(), name="rma-portal-session-sync"
+                )
+
     async def _run_sync_task(self) -> None:
-        started = time.monotonic()
+        started = time.perf_counter()
         logger.info("synchronization started")
         try:
             await self._run_sync()
@@ -219,4 +234,4 @@ class SessionConnector:
             raise
         except Exception:  # noqa: BLE001 - never crash the connector on a sync failure
             logger.exception("échec de la synchronisation après vérification de la session")
-        logger.info("synchronization finished elapsed=%.1fs", time.monotonic() - started)
+        logger.info("synchronization finished elapsed_ms=%.1f", (time.perf_counter() - started) * 1000)

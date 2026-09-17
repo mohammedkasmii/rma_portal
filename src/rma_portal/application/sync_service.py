@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import UTC, datetime
 
 from rma_portal.application.dto import (
@@ -27,6 +28,7 @@ from rma_portal.application.ports import PortalReader, PortalReaderFactory, Unit
 from rma_portal.domain.enums import NotificationKind, PollStatus, SessionStatus
 from rma_portal.domain.models import Dossier, DossierDates
 from rma_portal.domain.sync_rules import ExistingDossierState, ReconciliationInput, reconcile
+from rma_portal.observability import log_stage, new_operation_id, operation_context
 
 logger = logging.getLogger(__name__)
 
@@ -70,34 +72,48 @@ class SyncAgreementQueue:
         inflight: asyncio.Future[SyncResult] = loop.create_future()
         self._inflight = inflight
         async with self._lock:
-            try:
-                result = await self._execute_once()
-            except BaseException as exc:  # noqa: BLE001 - propagate after publishing
+            # Every actual execution (never the shield-only coalesce path
+            # above) gets its own fresh correlation ID -- "each ...
+            # synchronization gets a correlation ID", including one
+            # triggered right after a login (SessionConnector), which
+            # already has its own "conn-*" ID in context; this
+            # deliberately overrides it rather than inheriting it, since
+            # the sync is its own operation with its own poll_runs row.
+            with operation_context(new_operation_id("sync")):
+                try:
+                    result = await self._execute_once()
+                except BaseException as exc:  # noqa: BLE001 - propagate after publishing
+                    if not inflight.done():
+                        inflight.set_exception(exc)
+                    # A concurrent caller may never materialize to shield/await
+                    # this Future (e.g. a solo cancellation during shutdown).
+                    # asyncio logs "Future exception was never retrieved" at GC
+                    # time unless *someone* reads it -- reading it here (harmless;
+                    # multiple reads of a resolved Future are fine) guarantees
+                    # that always happens, while any concurrent shielder still
+                    # observes the same exception independently.
+                    inflight.exception()
+                    self._inflight = None
+                    raise
                 if not inflight.done():
-                    inflight.set_exception(exc)
-                # A concurrent caller may never materialize to shield/await
-                # this Future (e.g. a solo cancellation during shutdown).
-                # asyncio logs "Future exception was never retrieved" at GC
-                # time unless *someone* reads it -- reading it here (harmless;
-                # multiple reads of a resolved Future are fine) guarantees
-                # that always happens, while any concurrent shielder still
-                # observes the same exception independently.
-                inflight.exception()
+                    inflight.set_result(result)
                 self._inflight = None
-                raise
-            if not inflight.done():
-                inflight.set_result(result)
-            self._inflight = None
-            return result
+                return result
 
     async def _execute_once(self) -> SyncResult:
         now = datetime.now(UTC)
+        sync_started = time.perf_counter()
+        logger.info("stage=synchronization outcome=START")
 
         with self._uow_factory() as uow:
             account = uow.portal_accounts.get_default()
             if account is None or account.id is None:
                 raise RuntimeError("no portal account is configured")
             if not account.enabled:
+                logger.info(
+                    "stage=synchronization outcome=SKIPPED elapsed_ms=%.1f reason=account_disabled",
+                    (time.perf_counter() - sync_started) * 1000,
+                )
                 return SyncResult(status=None, skipped=True, skip_reason="portal account disabled")
             account_id = account.id
             baseline_already_completed = account.baseline_completed_at is not None
@@ -110,14 +126,22 @@ class SyncAgreementQueue:
         try:
             reader_cm = self._reader_factory.open()
         except BrowserProfileLockedError as exc:
+            logger.info(
+                "stage=synchronization outcome=SKIPPED elapsed_ms=%.1f reason=profile_locked",
+                (time.perf_counter() - sync_started) * 1000,
+            )
             return SyncResult(status=None, skipped=True, skip_reason=str(exc))
 
         try:
             reader = await reader_cm.__aenter__()
         except BrowserProfileLockedError as exc:
+            logger.info(
+                "stage=synchronization outcome=SKIPPED elapsed_ms=%.1f reason=profile_locked",
+                (time.perf_counter() - sync_started) * 1000,
+            )
             return SyncResult(status=None, skipped=True, skip_reason=str(exc))
         except Exception as exc:  # noqa: BLE001 - any launch/context failure
-            return self._record_failed_poll(account_id, now, _short_error(exc))
+            return self._record_failed_poll(account_id, now, sync_started, _short_error(exc))
 
         try:
             with self._uow_factory() as uow:
@@ -127,8 +151,10 @@ class SyncAgreementQueue:
                 uow.commit()
         except Exception as exc:  # noqa: BLE001 - cannot even record the attempt
             if not await self._close_reader(reader_cm):
-                return self._record_failed_poll(account_id, now, _UNCONFIRMED_CLEANUP_MESSAGE)
-            return self._record_failed_poll(account_id, now, _short_error(exc))
+                return self._record_failed_poll(
+                    account_id, now, sync_started, _UNCONFIRMED_CLEANUP_MESSAGE
+                )
+            return self._record_failed_poll(account_id, now, sync_started, _short_error(exc))
 
         try:
             snapshot = QueueSnapshot()
@@ -145,18 +171,27 @@ class SyncAgreementQueue:
             except PortalReadError as exc:
                 status, error = PollStatus.FAILED, str(exc)
 
-            created = reactivated = deactivated = notified = details_failed = 0
+            created = reactivated = deactivated = notified = details_attempted = details_failed = 0
+            detail_read_seconds = 0.0
             if status in (PollStatus.COMPLETE, PollStatus.PARTIAL):
-                created, reactivated, deactivated, notified, details_failed = (
-                    await self._reconcile_and_enrich(
-                        reader, account_id, status, baseline_already_completed, snapshot, now
-                    )
+                (
+                    created,
+                    reactivated,
+                    deactivated,
+                    notified,
+                    details_attempted,
+                    details_failed,
+                    detail_read_seconds,
+                ) = await self._reconcile_and_enrich(
+                    reader, account_id, status, baseline_already_completed, snapshot, now
                 )
         except Exception as exc:  # noqa: BLE001 - unexpected mid-poll failure
             status = PollStatus.FAILED
             error = _short_error(exc)
+            logger.error("stage=synchronization outcome=FAILED unexpected mid-poll error", exc_info=True)
             snapshot = QueueSnapshot()
-            created = reactivated = deactivated = notified = details_failed = 0
+            created = reactivated = deactivated = notified = details_attempted = details_failed = 0
+            detail_read_seconds = 0.0
         finally:
             cleanup_ok = await self._close_reader(reader_cm)
 
@@ -189,6 +224,22 @@ class SyncAgreementQueue:
             )
             uow.commit()
 
+        total_elapsed_ms = (time.perf_counter() - sync_started) * 1000
+        details_ok = details_attempted - details_failed
+        summary_log = logger.info if status == PollStatus.COMPLETE else logger.warning
+        summary_log(
+            "stage=synchronization outcome=%s elapsed_ms=%.1f pages=%d rows=%d "
+            "detail_attempts=%d details_ok=%d details_failed=%d detail_read_ms=%.1f",
+            status,
+            total_elapsed_ms,
+            snapshot.pages_seen,
+            snapshot.rows_seen,
+            details_attempted,
+            details_ok,
+            details_failed,
+            detail_read_seconds * 1000,
+        )
+
         return SyncResult(
             status=status,
             rows_seen=snapshot.rows_seen,
@@ -219,12 +270,18 @@ class SyncAgreementQueue:
         so the poll itself can be finished correctly (FAILED/ERROR, never
         a false success) instead of also managing lock ownership here.
         """
+        started = time.perf_counter()
         try:
             await asyncio.wait_for(
                 reader_cm.__aexit__(None, None, None), timeout=_CLEANUP_TIMEOUT_SECONDS
             )
         except Exception:  # noqa: BLE001 - reported via the return value, not swallowed
-            logger.exception("échec du nettoyage du navigateur après synchronisation")
+            logger.exception(
+                "échec du nettoyage du navigateur après synchronisation "
+                "elapsed_ms=%.1f timeout_s=%.0f",
+                (time.perf_counter() - started) * 1000,
+                _CLEANUP_TIMEOUT_SECONDS,
+            )
             return False
         return True
 
@@ -376,7 +433,9 @@ class SyncAgreementQueue:
             )
             uow.commit()
 
-    def _record_failed_poll(self, account_id: int, started_at: datetime, error: str) -> SyncResult:
+    def _record_failed_poll(
+        self, account_id: int, started_at: datetime, perf_started: float, error: str
+    ) -> SyncResult:
         """A poll that never got a reader at all: one FAILED row, created
         and finished in the same transaction so nothing is ever left
         unfinished."""
@@ -397,6 +456,11 @@ class SyncAgreementQueue:
                 account_id, status=PollStatus.FAILED, polled_at=completed_at, error=error
             )
             uow.commit()
+        logger.warning(
+            "stage=synchronization outcome=FAILED elapsed_ms=%.1f pages=0 rows=0 "
+            "detail_attempts=0 details_ok=0 details_failed=0 detail_read_ms=0.0",
+            (time.perf_counter() - perf_started) * 1000,
+        )
         return SyncResult(status=PollStatus.FAILED, error=error)
 
     async def _reconcile_and_enrich(
@@ -407,10 +471,10 @@ class SyncAgreementQueue:
         baseline_already_completed: bool,
         snapshot: QueueSnapshot,
         now: datetime,
-    ) -> tuple[int, int, int, int, int]:
+    ) -> tuple[int, int, int, int, int, int, float]:
         rows_by_id = {row.record_id: row for row in snapshot.rows}
 
-        with self._uow_factory() as uow:
+        with self._uow_factory() as uow, log_stage(logger, "db_reconciliation", rows_seen=len(rows_by_id)):
             existing = uow.dossiers.existing_state_by_account(account_id)
             result = reconcile(
                 ReconciliationInput(
@@ -467,17 +531,23 @@ class SyncAgreementQueue:
             uow.commit()
 
         details_failed = 0
-        for dossier in dossiers_needing_detail.values():
+        details_total = len(dossiers_needing_detail)
+        detail_read_seconds = 0.0
+        for index, dossier in enumerate(dossiers_needing_detail.values(), start=1):
             ref = _as_portal_ref(dossier)
+            detail_started = time.perf_counter()
             try:
-                details = await reader.read_dossier_details(ref)
+                with log_stage(logger, "dossier_detail_read", index=index, total=details_total):
+                    details = await reader.read_dossier_details(ref)
             except DetailReadError as exc:
+                detail_read_seconds += time.perf_counter() - detail_started
                 details_failed += 1
-                with self._uow_factory() as uow:
+                with log_stage(logger, "db_save", index=index), self._uow_factory() as uow:
                     uow.dossiers.save_details(dossier.id, _failed_details(str(exc)))
                     uow.commit()
                 continue
-            with self._uow_factory() as uow:
+            detail_read_seconds += time.perf_counter() - detail_started
+            with log_stage(logger, "db_save", index=index), self._uow_factory() as uow:
                 uow.dossiers.save_details(dossier.id, details)
                 uow.commit()
 
@@ -486,7 +556,9 @@ class SyncAgreementQueue:
             len(result.to_reactivate),
             len(result.to_deactivate),
             notified,
+            details_total,
             details_failed,
+            detail_read_seconds,
         )
 
 
