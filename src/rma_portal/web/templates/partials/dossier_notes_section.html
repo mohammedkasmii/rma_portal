@@ -1,0 +1,33 @@
+<section class="card dossier-notes" id="dossier-notes-section">
+  <h2>Notes partagées</h2>
+  <ul class="notes-list">
+    {% for note in notes %}
+    {% set author = users_by_id.get(note.author_id) %}
+    <li>
+      <div class="note-meta">
+        <span class="note-author">{{ author.display_name if author else "Auteur inconnu" }}</span>
+        <span class="note-date">{{ note.created_at | local_dt }}</span>
+      </div>
+      <p class="note-body">{{ note.body }}</p>
+    </li>
+    {% else %}
+    <li class="muted">Aucune note pour le moment.</li>
+    {% endfor %}
+  </ul>
+  <form hx-post="/dossiers/{{ dossier_id }}/notes"
+        hx-target="#dossier-notes-section"
+        hx-swap="outerHTML"
+        hx-indicator="#note-indicator"
+        hx-disabled-elt="find button[type='submit']"
+        class="note-form">
+    <label class="field-label" for="note-body">Ajouter une note (visible par tous, 2000 caractères max, non modifiable)</label>
+    <textarea name="body" id="note-body" maxlength="2000" rows="3" placeholder="Ajouter une note..." required></textarea>
+    <div class="form-row">
+      <button type="submit" class="primary">Ajouter la note</button>
+      <span id="note-indicator" class="htmx-indicator spinner" aria-live="polite">Envoi…</span>
+    </div>
+  </form>
+  {% if note_message %}
+  <p class="feedback {{ note_message_class }}" role="status">{{ note_message }}</p>
+  {% endif %}
+</section>

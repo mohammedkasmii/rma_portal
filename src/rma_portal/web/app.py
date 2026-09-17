@@ -11,7 +11,9 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
@@ -34,6 +36,17 @@ logger = logging.getLogger(__name__)
 
 _WEB_DIR = Path(__file__).parent
 _SLOW_REQUEST_SECONDS = 1.0
+
+
+def _local_datetime_filter(tz: ZoneInfo):
+    def _format(value: datetime | None, pattern: str = "%d/%m/%Y %H:%M") -> str:
+        if value is None:
+            return "—"
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=UTC)
+        return value.astimezone(tz).strftime(pattern)
+
+    return _format
 
 
 def _route_template(request: Request) -> str:
@@ -63,6 +76,9 @@ def create_app(application: Application | None = None) -> FastAPI:
     app = FastAPI(title="Portail RMA", lifespan=lifespan)
     app.state.application = application
     app.state.templates = Jinja2Templates(directory=str(_WEB_DIR / "templates"))
+    app.state.templates.env.filters["local_dt"] = _local_datetime_filter(
+        ZoneInfo(application.settings.portal_timezone)
+    )
     app.state.session_codec = SessionCodec(
         application.settings.session_secret, application.settings.session_lifetime_hours * 3600
     )

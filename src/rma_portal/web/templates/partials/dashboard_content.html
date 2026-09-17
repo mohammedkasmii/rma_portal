@@ -44,7 +44,7 @@
   <div class="dashboard-toolbar">
     <div class="last-refresh">
       {% if portal_account and portal_account.last_success_at %}
-        Dernière synchronisation réussie : {{ portal_account.last_success_at.strftime("%d/%m/%Y %H:%M") }}
+        Dernière synchronisation réussie : {{ portal_account.last_success_at | local_dt }}
       {% else %}
         Aucune synchronisation réussie pour le moment.
       {% endif %}
@@ -54,8 +54,11 @@
       hx-include="#filters"
       hx-target="#dashboard-content"
       hx-swap="outerHTML"
+      hx-indicator="#refresh-indicator"
+      hx-disabled-elt="this"
       class="primary">
       Actualiser maintenant
+      <span id="refresh-indicator" class="htmx-indicator spinner" aria-live="polite">…</span>
     </button>
   </div>
 
@@ -73,57 +76,71 @@
         hx-swap="outerHTML"
         hx-trigger="change, keyup delay:400ms from:input[name='search']"
         class="filters">
-    <input type="text" name="search" placeholder="N° dossier, nom, immatriculation, garage"
-           value="{{ filters.search or '' }}">
-    <label><input type="checkbox" name="unread_only" value="1" {% if filters.unread_only %}checked{% endif %}> Non lus uniquement</label>
-    <select name="work_status">
-      <option value="">Tous les statuts</option>
-      {% for value, label in work_status_options %}
-        <option value="{{ value }}" {% if filters.work_status == value %}selected{% endif %}>{{ label }}</option>
-      {% endfor %}
-    </select>
-    <select name="portal_status">
-      <option value="">Tous les statuts OmegaFlow</option>
-      {% for value in portal_status_options %}
-        <option value="{{ value }}" {% if filters.portal_status == value %}selected{% endif %}>{{ value }}</option>
-      {% endfor %}
-    </select>
+    <label class="field">
+      <span class="field-label">Recherche</span>
+      <input type="text" name="search" placeholder="N° dossier, nom, immatriculation, garage"
+             value="{{ filters.search or '' }}">
+    </label>
+    <label class="field field-checkbox">
+      <input type="checkbox" name="unread_only" value="1" {% if filters.unread_only %}checked{% endif %}>
+      <span>Non lus uniquement</span>
+    </label>
+    <label class="field">
+      <span class="field-label">Statut de traitement</span>
+      <select name="work_status">
+        <option value="">Tous les statuts</option>
+        {% for value, label in work_status_options %}
+          <option value="{{ value }}" {% if filters.work_status == value %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="field">
+      <span class="field-label">Statut OmegaFlow</span>
+      <select name="portal_status">
+        <option value="">Tous les statuts OmegaFlow</option>
+        {% for value in portal_status_options %}
+          <option value="{{ value }}" {% if filters.portal_status == value %}selected{% endif %}>{{ value }}</option>
+        {% endfor %}
+      </select>
+    </label>
   </form>
 
-  <table class="dossier-table">
-    <thead>
-      <tr>
-        <th></th>
-        <th>Dossier</th>
-        <th>Nom</th>
-        <th>Immatriculation</th>
-        <th>Garage</th>
-        <th>Statut OmegaFlow</th>
-        <th>Date envoi devis garage</th>
-        <th>Fin de travaux prévue</th>
-        <th>Détection</th>
-        <th>Statut de traitement</th>
-        <th></th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for row in rows %}
-      <tr class="{% if row.unread %}row-unread{% endif %}">
-        <td>{% if row.unread %}<span class="badge-new">Nouveau</span>{% endif %}</td>
-        <td>{{ row.dossier_number }}</td>
-        <td>{{ row.insured_name }}</td>
-        <td>{{ row.registration }}</td>
-        <td>{{ row.garage }}</td>
-        <td>{{ row.portal_status }}</td>
-        <td class="highlight">{{ row.date_envoi_devis_garage_raw }}</td>
-        <td>{{ row.date_fin_travaux_prevue_raw }}</td>
-        <td>{{ row.detection_time.strftime("%d/%m/%Y %H:%M") }}</td>
-        <td>{{ work_status_labels[row.work_status] }}</td>
-        <td><a href="/dossiers/{{ row.dossier_id }}">Détails</a></td>
-      </tr>
-      {% else %}
-      <tr><td colspan="11" class="muted">Aucun dossier ne correspond aux filtres actuels.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
+  <div class="table-scroll">
+    <table class="dossier-table">
+      <thead>
+        <tr>
+          <th></th>
+          <th>Dossier</th>
+          <th>Nom</th>
+          <th>Immatriculation</th>
+          <th>Garage</th>
+          <th>Statut OmegaFlow</th>
+          <th>Date envoi devis garage</th>
+          <th>Fin de travaux prévue</th>
+          <th>Détection</th>
+          <th>Statut de traitement</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr class="{% if row.unread %}row-unread{% endif %}">
+          <td>{% if row.unread %}<span class="badge-new">Nouveau</span>{% endif %}</td>
+          <td>{{ row.dossier_number }}</td>
+          <td>{{ row.insured_name }}</td>
+          <td>{{ row.registration }}</td>
+          <td>{{ row.garage }}</td>
+          <td><span class="badge badge-portal-status">{{ row.portal_status }}</span></td>
+          <td class="highlight">{{ row.date_envoi_devis_garage_raw }}</td>
+          <td>{{ row.date_fin_travaux_prevue_raw }}</td>
+          <td>{{ row.detection_time | local_dt }}</td>
+          <td><span class="badge badge-status-{{ row.work_status.value | lower | replace('_', '-') }}">{{ work_status_labels[row.work_status] }}</span></td>
+          <td><a class="secondary" href="/dossiers/{{ row.dossier_id }}">Détails</a></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="11" class="muted">Aucun dossier ne correspond aux filtres actuels.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
 </div>

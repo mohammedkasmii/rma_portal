@@ -2,15 +2,16 @@
 {% block title %}Session OmegaFlow — Portail RMA{% endblock %}
 {% block content %}
 <h1>Session OmegaFlow</h1>
+<section class="card">
 {% if account %}
 <dl>
   <dt>Statut de session</dt><dd>{{ account.session_status.value }}</dd>
   <dt>Dernière tentative de synchronisation</dt>
-  <dd>{{ account.last_poll_at.strftime("%d/%m/%Y %H:%M") if account.last_poll_at else "Jamais" }}</dd>
+  <dd>{{ account.last_poll_at | local_dt if account.last_poll_at else "Jamais" }}</dd>
   <dt>Dernière synchronisation réussie</dt>
-  <dd>{{ account.last_success_at.strftime("%d/%m/%Y %H:%M") if account.last_success_at else "Jamais" }}</dd>
+  <dd>{{ account.last_success_at | local_dt if account.last_success_at else "Jamais" }}</dd>
   <dt>Base de référence (baseline)</dt>
-  <dd>{{ account.baseline_completed_at.strftime("%d/%m/%Y %H:%M") if account.baseline_completed_at else "Pas encore établie" }}</dd>
+  <dd>{{ account.baseline_completed_at | local_dt if account.baseline_completed_at else "Pas encore établie" }}</dd>
   <dt>Dernière erreur</dt>
   <dd>{{ account.last_error or "Aucune" }}</dd>
 </dl>
@@ -20,8 +21,9 @@
 </p>
 {% endif %}
 {% else %}
-<p class="error">Aucun compte OmegaFlow configuré.</p>
+<p class="feedback error">Aucun compte OmegaFlow configuré.</p>
 {% endif %}
+</section>
 <p class="muted">
   Le moyen normal de (re)connecter la session OmegaFlow est le bouton
   « Se connecter »/« Reconnecter » sur le tableau de bord, accessible à tout

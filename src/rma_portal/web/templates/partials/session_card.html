@@ -35,9 +35,9 @@
 
   <p class="muted small">
     Dernière vérification :
-    {{ session.last_poll_at.strftime("%d/%m/%Y %H:%M") if session.last_poll_at else "jamais" }}
+    {{ session.last_poll_at | local_dt if session.last_poll_at else "jamais" }}
     · Dernière synchronisation réussie :
-    {{ session.last_success_at.strftime("%d/%m/%Y %H:%M") if session.last_success_at else "jamais" }}
+    {{ session.last_success_at | local_dt if session.last_success_at else "jamais" }}
   </p>
   {% if session.syncing %}
   <p class="muted small">Synchronisation des dossiers en cours…</p>

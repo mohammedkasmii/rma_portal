@@ -1,0 +1,31 @@
+<section class="card dossier-work" id="dossier-work-section">
+  <h2>
+    Statut de traitement <span class="muted small">(partagé entre tous les employés)</span>
+    {% if work %}
+      {% for value, label in work_status_options %}
+        {% if value == work.status.value %}
+        <span class="badge badge-status-{{ value | lower | replace('_', '-') }}">{{ label }}</span>
+        {% endif %}
+      {% endfor %}
+    {% endif %}
+  </h2>
+  <form hx-post="/dossiers/{{ dossier_id }}/status"
+        hx-target="#dossier-work-section"
+        hx-swap="outerHTML"
+        hx-indicator="#status-indicator"
+        hx-disabled-elt="find button[type='submit']"
+        class="inline-form">
+    <input type="hidden" name="expected_version" value="{{ work.version if work else '' }}">
+    <label class="field-label" for="status-select">Statut</label>
+    <select name="status" id="status-select">
+      {% for value, label in work_status_options %}
+        <option value="{{ value }}" {% if work and work.status.value == value %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit" class="primary">Mettre à jour</button>
+    <span id="status-indicator" class="htmx-indicator spinner" aria-live="polite">Mise à jour…</span>
+  </form>
+  {% if status_message %}
+  <p class="feedback {{ status_message_class }}" role="status">{{ status_message }}</p>
+  {% endif %}
+</section>

@@ -1,0 +1,38 @@
+<nav class="breadcrumb"><a href="/">&larr; Retour au tableau de bord</a></nav>
+<h1>Dossier {{ dossier.dossier_number }}</h1>
+
+<section class="card dossier-summary">
+  <h2>Informations générales</h2>
+  <dl>
+    <dt>Assuré</dt><dd>{{ dossier.insured_name }}</dd>
+    <dt>Immatriculation</dt><dd>{{ dossier.registration }}</dd>
+    <dt>Garage</dt><dd>{{ dossier.garage }}</dd>
+    <dt>Procédure</dt><dd>{{ dossier.procedure }}</dd>
+    <dt>Statut OmegaFlow</dt><dd><span class="badge badge-portal-status">{{ dossier.portal_status }}</span></dd>
+    <dt>Ville</dt><dd>{{ dossier.city }}</dd>
+    <dt>Montant estimé</dt><dd>{{ dossier.estimate_amount_raw }}</dd>
+    <dt>Nombre d'observations</dt><dd>{{ dossier.observation_count }}</dd>
+    <dt>Login accord</dt><dd>{{ dossier.agreement_login }}</dd>
+  </dl>
+  <a class="secondary" href="{{ omegaflow_details_url }}" target="_blank" rel="noopener">
+    Ouvrir la fiche OmegaFlow d'origine
+  </a>
+</section>
+
+<section class="card dossier-dates">
+  <h2>Dates</h2>
+  <dl>
+    <dt class="highlight">Date envoi devis garage</dt>
+    <dd class="highlight">{{ dossier.dates.date_envoi_devis_garage_raw or "—" }}</dd>
+    <dt>Date création</dt><dd>{{ dossier.dates.date_creation_raw or "—" }}</dd>
+    <dt>Première date de fin prévue</dt><dd>{{ dossier.dates.date_premiere_fin_prevue_raw or "—" }}</dd>
+    <dt>Date fin de travaux prévue</dt><dd>{{ dossier.dates.date_fin_travaux_prevue_raw or "—" }}</dd>
+    <dt>Date photos avant</dt><dd>{{ dossier.dates.date_photos_avant_raw or "—" }}</dd>
+  </dl>
+  {% if dossier.detail_error %}
+  <p class="feedback error">Détail OmegaFlow incomplet : {{ dossier.detail_error }} (nouvelle tentative automatique).</p>
+  {% endif %}
+</section>
+
+{% include "partials/dossier_work_section.html" %}
+{% include "partials/dossier_notes_section.html" %}
