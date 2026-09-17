@@ -52,6 +52,15 @@ class PortalReader(Protocol):
 class PortalReaderFactory(Protocol):
     def open(self) -> AbstractAsyncContextManager[PortalReader]: ...
 
+    def has_saved_session(self) -> bool:
+        """True once a session has been captured (see
+        ``infrastructure.portal.session_state``) -- a fresh installation
+        with nothing saved yet will never authenticate, so callers use this
+        to skip a browser sync attempt entirely rather than open the
+        profile only to fail after waiting on a queue view that cannot
+        appear."""
+        ...
+
 
 class PortalAccountRepository(Protocol):
     def get(self, account_id: int) -> PortalAccount | None: ...

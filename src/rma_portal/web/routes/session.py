@@ -25,9 +25,16 @@ async def connect_session(
     # duplicate click can never open a second browser; either way the
     # response shows the current (now-CONNECTING) state.
     app.session_connector.start()
+    # Set only when start() refused because a synchronization currently
+    # holds the profile lock (never because a window is already open/being
+    # verified -- CONNECTING/VERIFYING already show their own message) --
+    # see SessionConnector.start()'s docstring.
+    blocked_by_sync = app.session_connector.last_start_blocked_by_sync
     with app.uow_factory() as uow:
         portal_account = uow.portal_accounts.get_default()
     session = build_session_view(app, portal_account)
     return get_templates(request).TemplateResponse(
-        request, "partials/session_card.html", {"user": user, "session": session}
+        request,
+        "partials/session_card.html",
+        {"user": user, "session": session, "connect_blocked_by_sync": blocked_by_sync},
     )

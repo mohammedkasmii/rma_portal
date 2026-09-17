@@ -29,6 +29,10 @@
     </button>
   {% endif %}
 
+  {% if connect_blocked_by_sync %}
+    <p class="session-state error">Synchronisation en cours. Veuillez patienter puis réessayer.</p>
+  {% endif %}
+
   <p class="muted small">
     Dernière vérification :
     {{ session.last_poll_at.strftime("%d/%m/%Y %H:%M") if session.last_poll_at else "jamais" }}

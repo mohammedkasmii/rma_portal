@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import time
 from pathlib import Path
 from types import TracebackType
 from typing import Any
@@ -50,6 +51,8 @@ logger = logging.getLogger(__name__)
 
 _WRITE_HOST_MARKERS = ("omegaflow.ma", "knack.com")
 _VERIFY_POLL_INTERVAL_MS = 500
+_QUEUE_VIEW_POLL_INTERVAL_MS = 500
+_QUEUE_VIEW_TIMEOUT_SECONDS = 45.0
 
 AUTHENTICATED_VIEW_SELECTOR = "#view_1874"
 # Captured selector for the Garage agréé search form's submit button --
@@ -106,6 +109,9 @@ class CamoufoxPortalReaderFactory:
             locale=self._locale,
             headless=self._headless,
         )
+
+    def has_saved_session(self) -> bool:
+        return self._session_state_path.exists()
 
 
 class CamoufoxPortalReader:
@@ -326,14 +332,39 @@ class CamoufoxPortalReader:
         )
         await self._settle(page)
 
+    async def _wait_for_queue_view(self, page: Any) -> None:
+        """Polls for the authenticated queue view instead of a single blind
+        ``wait_for()`` -- right after navigation, Knack's page is often
+        still just an unauthenticated loading shell (no login marker yet,
+        same as ``verify_authenticated``'s own reasoning), so a one-time
+        auth check immediately after ``goto`` is not enough: the login/
+        session-validation screen can render moments later, well before
+        the :data:`_QUEUE_VIEW_TIMEOUT_SECONDS` a queue view that will
+        never appear would otherwise burn. Reuses
+        ``_assert_authenticated``/``is_authenticated_view_present``, the
+        same definitions used everywhere else, so an unauthenticated
+        session is caught within one poll interval instead of the full
+        timeout.
+        """
+        deadline = time.monotonic() + _QUEUE_VIEW_TIMEOUT_SECONDS
+        while True:
+            await self._assert_authenticated()
+            if await is_authenticated_view_present(page):
+                return
+            if time.monotonic() >= deadline:
+                raise PortalReadError(
+                    "Délai dépassé en attendant la file OmegaFlow "
+                    f"(étape: affichage de la file, après {_QUEUE_VIEW_TIMEOUT_SECONDS:.0f}s)."
+                )
+            await page.wait_for_timeout(_QUEUE_VIEW_POLL_INTERVAL_MS)
+
     async def read_agreement_queue(self) -> QueueSnapshot:
         page = self._require_page()
         pages_collected: list[QueueSnapshot] = []
         try:
             with log_stage(logger, "queue_navigation"):
                 await page.goto(self._start_route, wait_until="domcontentloaded", timeout=60_000)
-                await self._assert_authenticated()
-                await page.locator("#view_1874").wait_for(state="visible", timeout=45_000)
+                await self._wait_for_queue_view(page)
             await self._apply_garage_agree_filter(page)
 
             html = await page.content()

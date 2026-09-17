@@ -75,6 +75,7 @@ class SessionConnector:
         verify_session: VerifySession,
         run_sync: RunSync,
         mark_login_teardown_failed: MarkLoginTeardownFailed,
+        is_sync_running: Callable[[], bool] = lambda: False,
         verify_timeout_seconds: float = _DEFAULT_VERIFY_TIMEOUT_SECONDS,
         open_and_wait: OpenAndWait = launch_visible_browser_and_wait,
     ) -> None:
@@ -82,11 +83,13 @@ class SessionConnector:
         self._verify_session = verify_session
         self._run_sync = run_sync
         self._mark_login_teardown_failed = mark_login_teardown_failed
+        self._is_sync_running = is_sync_running
         self._verify_timeout_seconds = verify_timeout_seconds
         self._open_and_wait = open_and_wait
         self._login_task: asyncio.Task[None] | None = None
         self._verify_task: asyncio.Task[None] | None = None
         self._sync_task: asyncio.Task[None] | None = None
+        self.last_start_blocked_by_sync = False
 
     @property
     def is_active(self) -> bool:
@@ -101,22 +104,32 @@ class SessionConnector:
     def start(self) -> bool:
         """Start a connection window.
 
-        Returns False and does nothing if the connect flow is already
-        running (login, verification, or the sync it triggered) -- a
-        duplicate click (or a concurrent request) never opens a second
-        browser.
+        Returns False and does nothing if a window is already open or
+        being verified (``is_active``/``is_verifying`` -- the dashboard
+        already shows CONNECTING/VERIFYING for that, a duplicate click or
+        concurrent request never opens a second browser). Also returns
+        False, without ever creating ``_login_task``, whenever
+        ``is_sync_running()`` reports a synchronization currently holds the
+        profile lock -- the scheduler, a manual refresh, or the sync this
+        same connector triggers after a successful login all go through
+        the one shared ``SyncAgreementQueue.execute()``, so this one check
+        covers all three. ``_run_login`` would fail on
+        ``BrowserProfileLockedError`` moments later anyway (the lock is
+        acquired inside it, not here), but checking first means
+        ``is_active`` never flips true for a launch that was never going
+        to happen -- the dashboard would otherwise briefly claim a
+        connection window is open. ``last_start_blocked_by_sync`` records
+        that specific reason, for the caller to show a more targeted
+        message than "already running".
         """
-        if self._is_running:
+        self.last_start_blocked_by_sync = False
+        if self.is_active or self.is_verifying:
+            return False
+        if self._is_sync_running():
+            self.last_start_blocked_by_sync = True
             return False
         self._login_task = asyncio.create_task(self._run_login(), name="rma-portal-session-connect")
         return True
-
-    @property
-    def _is_running(self) -> bool:
-        return any(
-            task is not None and not task.done()
-            for task in (self._login_task, self._verify_task, self._sync_task)
-        )
 
     async def shutdown(self) -> None:
         """Cancel any in-flight phase and wait for cleanup.

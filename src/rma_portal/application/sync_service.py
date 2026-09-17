@@ -118,6 +118,23 @@ class SyncAgreementQueue:
             account_id = account.id
             baseline_already_completed = account.baseline_completed_at is not None
 
+        # A fresh installation (or one whose profile was wiped) has no
+        # captured OmegaFlow session yet -- a poll would always fail
+        # AUTH_REQUIRED, so skip without ever touching the browser/profile
+        # at all. This is what lets "Se connecter" acquire the profile
+        # lock immediately on a fresh PC instead of racing (and normally
+        # losing to) an automatic poll that is guaranteed to fail; normal
+        # polling resumes on its own once a session is captured and saved
+        # (see session_state.save_session_state), since the very next poll
+        # -- scheduled, manual, or the one SessionConnector triggers right
+        # after a successful connect -- finds it.
+        if not self._reader_factory.has_saved_session():
+            logger.info(
+                "stage=synchronization outcome=SKIPPED elapsed_ms=%.1f reason=no_saved_session",
+                (time.perf_counter() - sync_started) * 1000,
+            )
+            return SyncResult(status=None, skipped=True, skip_reason="no saved OmegaFlow session")
+
         # The browser/profile is opened *before* any poll_runs row is
         # created: a BrowserProfileLockedError is a safe skip that must
         # leave no record at all, and any other launch failure gets exactly

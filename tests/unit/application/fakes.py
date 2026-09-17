@@ -109,6 +109,7 @@ class FakePortalReaderFactory:
         aenter_exception: Exception | None = None,
         verify_delay_seconds: float = 0.0,
         aexit_gate: asyncio.Event | None = None,
+        has_saved_session: bool = True,
     ) -> None:
         self._polls = list(polls)
         self._details_by_id = details_by_id or {}
@@ -116,7 +117,11 @@ class FakePortalReaderFactory:
         self._aenter_exception = aenter_exception
         self._verify_delay_seconds = verify_delay_seconds
         self._aexit_gate = aexit_gate
+        self._has_saved_session = has_saved_session
         self.readers: list[FakePortalReader] = []
+
+    def has_saved_session(self) -> bool:
+        return self._has_saved_session
 
     def open(self) -> FakePortalReader:
         held = self._lock_held() if callable(self._lock_held) else self._lock_held
