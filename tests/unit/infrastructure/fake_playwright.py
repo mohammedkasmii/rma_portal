@@ -88,9 +88,14 @@ class FakePage:
     select_option_calls: list[dict[str, Any]] = field(default_factory=list)
     evaluate_calls: list[tuple[str, str]] = field(default_factory=list)
     wait_for_calls: list[tuple[str, str | None, float | None]] = field(default_factory=list)
+    page_evaluate_result: Any = ""
 
     def locator(self, selector: str) -> FakeLocator:
         return FakeLocator(self, selector)
+
+    async def evaluate(self, script: str, arg: Any = None) -> Any:
+        self.evaluate_calls.append(("<page>", script))
+        return self.page_evaluate_result
 
     async def goto(self, url: str, wait_until: str | None = None, timeout: float | None = None) -> None:
         self.goto_calls.append(url)

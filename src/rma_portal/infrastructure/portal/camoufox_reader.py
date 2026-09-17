@@ -60,6 +60,54 @@ AUTHENTICATED_VIEW_SELECTOR = "#view_1874"
 # element while the AJAX-driven search is in flight.
 _SEARCH_SUBMIT_SELECTOR = '#view_1874 form.kn-search_form button[type="submit"]'
 
+# Captured pagination markup: two identical ".kn-page-select" dropdowns
+# (top/bottom of the list) and a ".kn-change-page.kn-next" control that
+# gains an additional "disabled" class only once there is truly no next
+# page -- see _go_to_page and _verify_last_page_reached.
+_PAGE_SELECT_SELECTOR = "#view_1874 .kn-page-select"
+_NEXT_PAGE_SELECTOR = "#view_1874 .kn-change-page.kn-next"
+_PAGE_TRANSITION_TIMEOUT_MS = 20_000
+_ROW_IDS_JS = (
+    "() => Array.from(document.querySelectorAll("
+    "'#view_1874 table tbody tr[id]')).map(r => r.id).sort().join(',')"
+)
+# Two conditions, both required: every ".kn-page-select" (there are two,
+# top and bottom -- only the first is ever written to directly) shows the
+# requested page, AND the rendered row set differs from what was on
+# screen before navigating. Checking only the dropdown this code itself
+# just set (the previous implementation) passes the instant Playwright
+# writes that value -- before Knack's AJAX-driven refresh has even
+# started, since the *second*, untouched dropdown only updates once
+# Knack's own view re-render actually happens.
+_PAGE_TRANSITION_JS = """([selector, expected, beforeIds]) => {
+    const selects = document.querySelectorAll(selector);
+    if (selects.length === 0) return false;
+    for (const s of selects) { if (s.value !== expected) return false; }
+    const rows = Array.from(document.querySelectorAll(
+        '#view_1874 table tbody tr[id]'
+    )).map(r => r.id).sort().join(',');
+    return rows !== beforeIds;
+}"""
+
+
+class _StalePageResultError(RuntimeError):
+    """A pagination page's completion wait passed, but its rows exactly
+    match the previous page's -- OmegaFlow pages never legitimately repeat
+    the same dossier set, so this is almost certainly a stale render
+    rather than genuinely identical data. Deliberately a plain
+    ``RuntimeError`` (not ``PortalReadError``): raised only after at least
+    one page has already been collected, so ``read_agreement_queue``'s
+    generic exception handler wraps it as ``PortalPartialReadError`` with
+    whatever pages were already gathered, instead of discarding them as a
+    hard failure.
+    """
+
+    def __init__(self, page_number: int) -> None:
+        super().__init__(
+            f"La page {page_number} affiche les mêmes dossiers que la page précédente "
+            "(résultat probablement obsolète)."
+        )
+
 
 async def is_authenticated_view_present(page: Any) -> bool:
     """True once the authenticated queue view has genuinely rendered --
@@ -323,14 +371,46 @@ class CamoufoxPortalReader:
             await self._settle(page)
 
     async def _go_to_page(self, page: Any, page_number: int) -> None:
-        select = page.locator("#view_1874 .kn-page-select").first
+        """Navigates to ``page_number`` and waits for genuine evidence the
+        new page's results have actually rendered -- see
+        ``_PAGE_TRANSITION_JS`` for the two conditions this requires
+        together. Raises Playwright's own ``TimeoutError`` (a plain
+        ``Exception``, not ``PortalReadError``) if neither materializes
+        within :data:`_PAGE_TRANSITION_TIMEOUT_MS` -- caught by
+        ``read_agreement_queue``'s generic handler, which preserves
+        whatever pages were already collected as a ``PARTIAL`` result
+        rather than discarding them.
+        """
+        select = page.locator(_PAGE_SELECT_SELECTOR).first
+        before_row_ids = await page.evaluate(_ROW_IDS_JS)
         await select.select_option(str(page_number))
         await page.wait_for_function(
-            "([selector, expected]) => document.querySelector(selector)?.value === expected",
-            arg=["#view_1874 .kn-page-select", str(page_number)],
-            timeout=20_000,
+            _PAGE_TRANSITION_JS,
+            arg=[_PAGE_SELECT_SELECTOR, str(page_number), before_row_ids],
+            timeout=_PAGE_TRANSITION_TIMEOUT_MS,
         )
         await self._settle(page)
+
+    async def _verify_last_page_reached(self, page: Any, total_pages: int) -> None:
+        """Cross-checks the captured 'Next' control evidence against
+        ``total_pages`` after the last page has been visited --
+        ``.kn-change-page.kn-next`` only gains its additional ``disabled``
+        class once there truly is no next page. Guards against silently
+        under-reporting the queue if the page count read from page 1 ever
+        lagged the real data (e.g. a dossier appeared between that read
+        and this check). A missing control (no pagination widget at all)
+        is not an error -- a genuinely single-page result may not render
+        one.
+        """
+        next_control = page.locator(_NEXT_PAGE_SELECTOR).first
+        if await next_control.count() == 0:
+            return
+        classes = (await next_control.get_attribute("class")) or ""
+        if "disabled" not in classes.split():
+            raise RuntimeError(
+                f"La file OmegaFlow semble contenir plus de {total_pages} page(s) que prévu "
+                "(le bouton 'suivant' n'est pas désactivé après la dernière page lue)."
+            )
 
     async def _wait_for_queue_view(self, page: Any) -> None:
         """Polls for the authenticated queue view instead of a single blind
@@ -369,15 +449,45 @@ class CamoufoxPortalReader:
 
             html = await page.content()
             await self._assert_authenticated()
-            pages_collected.append(parse_queue_page(html))
+            first_page = parse_queue_page(html)
+            pages_collected.append(first_page)
+            # Read from the same fully-settled HTML the rows themselves
+            # came from -- _apply_garage_agree_filter's own completion
+            # wait (the search button's "is-loading" class clearing) is
+            # the evidence this is the fully rendered filtered result,
+            # not a partial/loading render.
             total_pages = parse_page_count(html)
+            logger.info(
+                "stage=pagination outcome=PAGE_COLLECTED page=1 total_pages=%d rows=%d",
+                total_pages,
+                len(first_page.rows),
+            )
 
             for page_number in range(2, total_pages + 1):
                 with log_stage(logger, "pagination_page", page=page_number, total=total_pages):
                     await self._go_to_page(page, page_number)
                     html = await page.content()
                     await self._assert_authenticated()
-                    pages_collected.append(parse_queue_page(html))
+                    page_snapshot = parse_queue_page(html)
+                    # Belt-and-suspenders on top of _go_to_page's own
+                    # row-change wait: never accept a page whose rows
+                    # exactly match the one before it, even if the wait
+                    # condition technically passed (e.g. a race between
+                    # the two dropdowns re-rendering and the row table).
+                    previous_ids = {row.record_id for row in pages_collected[-1].rows}
+                    current_ids = {row.record_id for row in page_snapshot.rows}
+                    if current_ids and current_ids == previous_ids:
+                        raise _StalePageResultError(page_number)
+                    pages_collected.append(page_snapshot)
+                    logger.info(
+                        "stage=pagination outcome=PAGE_COLLECTED page=%d total_pages=%d rows=%d",
+                        page_number,
+                        total_pages,
+                        len(page_snapshot.rows),
+                    )
+
+            with log_stage(logger, "pagination_verify_last_page", total_pages=total_pages):
+                await self._verify_last_page_reached(page, total_pages)
         except PortalAuthRequiredError:
             raise
         except PortalReadError:
@@ -391,7 +501,13 @@ class CamoufoxPortalReader:
                 raise PortalReadError(message) from exc
             raise PortalPartialReadError(message, partial=merge_snapshots(pages_collected)) from exc
 
-        return merge_snapshots(pages_collected)
+        merged = merge_snapshots(pages_collected)
+        logger.info(
+            "stage=pagination outcome=OK total_pages=%d unique_rows=%d",
+            total_pages,
+            len(merged.rows),
+        )
+        return merged
 
     async def verify_authenticated(self) -> None:
         """Short, read-only check: navigate to the queue's start route and
