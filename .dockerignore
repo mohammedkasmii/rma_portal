@@ -1,0 +1,20 @@
+# Build context for compose.poc.yaml (repo root). Keep secrets, data and raw captures out.
+.git
+.venv
+.env
+.env.*
+.pytest_cache
+.ruff_cache
+__pycache__
+*.pyc
+tests
+alembic
+alembic.ini
+scripts
+docs
+*.bat
+*.ps1
+*.sqlite3*
+Solution.java
+pytest-*.txt
+script_scrap

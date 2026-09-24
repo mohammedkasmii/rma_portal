@@ -1,0 +1,46 @@
+# Phase 0 PoC only -- isolated from every other stack (incl. wexia-*).
+# Own project name, network and volumes; no external resources; port 6080 only.
+#
+#   export POC_VNC_PASSWORD='choose-one'   # or put it in an untracked .env
+#   docker compose -f compose.poc.yaml build
+#   docker compose -f compose.poc.yaml up -d
+name: rma-poc
+
+services:
+  rma-poc-browser:
+    image: rma-poc-browser:phase0
+    container_name: rma-poc-browser
+    build:
+      context: .
+      dockerfile: docker/poc-browser/Dockerfile
+    init: true
+    restart: unless-stopped
+    shm_size: "1gb"
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "6080:6080"
+    environment:
+      POC_VNC_PASSWORD: ${POC_VNC_PASSWORD:?set POC_VNC_PASSWORD (VNC/noVNC password, first 8 chars are used)}
+      POC_OMEGAFLOW_BASE_URL: ${POC_OMEGAFLOW_BASE_URL:-https://omegaflow.ma}
+      POC_OMEGAFLOW_START_ROUTE: ${POC_OMEGAFLOW_START_ROUTE:-https://omegaflow.ma/#dossiers-en-instance-accord/}
+      POC_LOCALE: ${POC_LOCALE:-fr-FR}
+      POC_TIMEZONE: ${POC_TIMEZONE:-Africa/Casablanca}
+      TZ: ${POC_TIMEZONE:-Africa/Casablanca}
+      POC_SCREEN: ${POC_SCREEN:-1440x900x24}
+    volumes:
+      - rma-poc-profile:/var/lib/rma-poc/profile
+      - rma-poc-state:/var/lib/rma-poc/state
+    networks:
+      - rma-poc-net
+
+networks:
+  rma-poc-net:
+    name: rma-poc-net
+
+volumes:
+  rma-poc-profile:
+    name: rma-poc-profile
+  rma-poc-state:
+    name: rma-poc-state

@@ -1,0 +1,7 @@
+# Files executed or parsed inside Linux containers must keep LF endings.
+*.sh text eol=lf
+Dockerfile text eol=lf
+docker/poc-browser/supervisord.conf text eol=lf
+compose.poc.yaml text eol=lf
+docker/poc-browser/rma_poc/*.py text eol=lf
+.dockerignore text eol=lf
