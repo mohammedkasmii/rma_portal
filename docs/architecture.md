@@ -32,10 +32,25 @@ between layers explicit and independently testable.
    factory and wires them into the use cases above.
 
 This means a future direct-API reader (see `docs/omegaflow-contract.md`'s
-"future API candidates") or a second RMA queue can be added by writing a new
-`PortalReader`/`PortalReaderFactory` pair and registering it in
-`bootstrap.py` — nothing in `SyncAgreementQueue`, `domain.sync_rules` or the
-web layer needs to change.
+"future API candidates") can replace Camoufox behind the same application
+ports. Multiple RMA queues require workflow-scoped lifecycle state rather than
+the original dossier-scoped state. The additive foundation and its staged
+migration are specified in `docs/multi-workflow-system-design.md`.
+
+## Multi-workflow foundation
+
+The `workflows` and `workflow_memberships` tables establish the target model
+without changing the production Garage agree synchronization path yet. One
+dossier remains the shared OmegaFlow record; each queue or stage owns a
+separate membership with its own baseline, detection, absence and reappearance
+lifecycle. The initial migration seeds `agreement_garage` and backfills current
+dossiers so a later synchronizer cutover preserves existing history.
+
+Captured queues are not automatically enabled. Employee-approved trigger,
+deadline, completion, acknowledgement and change-alert rules must be recorded
+before a workflow starts producing work. See
+`docs/multi-workflow-system-design.md` for the target synchronization and UI
+boundaries.
 
 ## Read-only OmegaFlow adapter
 

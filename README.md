@@ -3,8 +3,9 @@
 Portail interne de suivi des dossiers RMA. Il lit en **lecture seule** la file
 « Dossiers en instance d'accord » (filtre « Garage agréé ») du portail
 OmegaFlow, et affiche les dossiers, leurs dates et leur statut de traitement
-aux employés de l'agence sur le réseau local. Voir `docs/architecture.md` et
-`docs/omegaflow-contract.md` pour les détails techniques.
+aux employés de l'agence sur le réseau local. Voir `docs/architecture.md`,
+`docs/omegaflow-contract.md` et `docs/multi-workflow-system-design.md` pour les
+détails techniques et la fondation des prochains workflows.
 
 Le portail n'envoie, ne valide et ne supprime jamais d'information dans
 OmegaFlow.

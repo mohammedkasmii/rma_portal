@@ -18,6 +18,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -28,6 +29,7 @@ from rma_portal.domain.enums import (
     PollStatus,
     Role,
     SessionStatus,
+    WorkflowRulesStatus,
     WorkStatus,
 )
 from rma_portal.infrastructure.db.base import Base
@@ -71,6 +73,41 @@ class PortalAccountRow(Base):
     last_poll_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error: Mapped[str | None] = mapped_column(String(1000))
+
+
+class WorkflowRow(Base):
+    """Technical definition and independent poll state for one queue."""
+
+    __tablename__ = "workflows"
+    __table_args__ = (
+        UniqueConstraint("portal_account_id", "key", name="uq_workflow_account_key"),
+        Index("ix_workflow_account_enabled", "portal_account_id", "enabled"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    portal_account_id: Mapped[int] = mapped_column(
+        ForeignKey("portal_accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    key: Mapped[str] = mapped_column(String(100), nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    category: Mapped[str] = mapped_column(String(150), nullable=False)
+    route: Mapped[str] = mapped_column(String(500), nullable=False)
+    view_id: Mapped[str] = mapped_column(String(50), nullable=False)
+    enabled: Mapped[bool] = mapped_column(default=False, nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    rules_status: Mapped[WorkflowRulesStatus] = mapped_column(
+        _enum_column(WorkflowRulesStatus, 20),
+        nullable=False,
+        default=WorkflowRulesStatus.UNCONFIRMED,
+    )
+    baseline_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_poll_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(String(1000))
+
+    memberships: Mapped[list[WorkflowMembershipRow]] = relationship(
+        back_populates="workflow", cascade="all, delete-orphan"
+    )
 
 
 class DossierRow(Base):
@@ -126,6 +163,38 @@ class DossierRow(Base):
     notes: Mapped[list[DossierNoteRow]] = relationship(
         back_populates="dossier", cascade="all, delete-orphan", order_by="DossierNoteRow.created_at"
     )
+    workflow_memberships: Mapped[list[WorkflowMembershipRow]] = relationship(
+        back_populates="dossier", cascade="all, delete-orphan"
+    )
+
+
+class WorkflowMembershipRow(Base):
+    """Queue-specific lifecycle for a shared dossier."""
+
+    __tablename__ = "workflow_memberships"
+    __table_args__ = (
+        UniqueConstraint("workflow_id", "dossier_id", name="uq_membership_workflow_dossier"),
+        Index("ix_membership_workflow_active", "workflow_id", "active"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    workflow_id: Mapped[int] = mapped_column(
+        ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False
+    )
+    dossier_id: Mapped[int] = mapped_column(
+        ForeignKey("dossiers.id", ondelete="CASCADE"), nullable=False
+    )
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    active: Mapped[bool] = mapped_column(default=True, nullable=False)
+    missing_complete_polls: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    occurrence_number: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    captured_fields_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    last_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    workflow: Mapped[WorkflowRow] = relationship(back_populates="memberships")
+    dossier: Mapped[DossierRow] = relationship(back_populates="workflow_memberships")
 
 
 class NotificationRow(Base):

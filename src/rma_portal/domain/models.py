@@ -7,10 +7,18 @@ module. Entities are plain dataclasses; persistence mapping lives in
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from rma_portal.domain.enums import NotificationKind, PollStatus, Role, SessionStatus, WorkStatus
+from rma_portal.domain.enums import (
+    NotificationKind,
+    PollStatus,
+    Role,
+    SessionStatus,
+    WorkflowRulesStatus,
+    WorkStatus,
+)
 
 
 @dataclass(slots=True)
@@ -35,6 +43,48 @@ class PortalAccount:
     last_poll_at: datetime | None
     last_success_at: datetime | None
     last_error: str | None
+
+
+@dataclass(slots=True)
+class Workflow:
+    """One independently observed OmegaFlow queue or business stage."""
+
+    id: int | None
+    portal_account_id: int
+    key: str
+    name: str
+    category: str
+    route: str
+    view_id: str
+    enabled: bool
+    sort_order: int
+    rules_status: WorkflowRulesStatus
+    baseline_completed_at: datetime | None
+    last_poll_at: datetime | None
+    last_success_at: datetime | None
+    last_error: str | None
+
+
+@dataclass(slots=True)
+class WorkflowMembership:
+    """One dossier's lifecycle inside one workflow.
+
+    A shared dossier can belong to several queues simultaneously. Arrival,
+    absence and reappearance therefore live here instead of on the dossier
+    once the multi-workflow synchronizer is activated.
+    """
+
+    id: int | None
+    workflow_id: int
+    dossier_id: int
+    first_seen_at: datetime
+    last_seen_at: datetime
+    active: bool
+    missing_complete_polls: int
+    occurrence_number: int
+    captured_fields: Mapping[str, str]
+    fingerprint: str
+    last_changed_at: datetime | None
 
 
 @dataclass(slots=True)

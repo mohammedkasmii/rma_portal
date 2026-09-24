@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 
 from sqlalchemy import func, select
@@ -18,6 +19,8 @@ from rma_portal.domain.models import (
     PollRun,
     PortalAccount,
     User,
+    Workflow,
+    WorkflowMembership,
     WorkStatusConflict,
 )
 from rma_portal.domain.sync_rules import ExistingDossierState
@@ -30,6 +33,8 @@ from rma_portal.infrastructure.db.models import (
     PollRunRow,
     PortalAccountRow,
     UserRow,
+    WorkflowMembershipRow,
+    WorkflowRow,
 )
 
 
@@ -97,6 +102,41 @@ def _to_domain_portal_account(row: PortalAccountRow) -> PortalAccount:
         last_poll_at=row.last_poll_at,
         last_success_at=row.last_success_at,
         last_error=row.last_error,
+    )
+
+
+def _to_domain_workflow(row: WorkflowRow) -> Workflow:
+    return Workflow(
+        id=row.id,
+        portal_account_id=row.portal_account_id,
+        key=row.key,
+        name=row.name,
+        category=row.category,
+        route=row.route,
+        view_id=row.view_id,
+        enabled=row.enabled,
+        sort_order=row.sort_order,
+        rules_status=row.rules_status,
+        baseline_completed_at=row.baseline_completed_at,
+        last_poll_at=row.last_poll_at,
+        last_success_at=row.last_success_at,
+        last_error=row.last_error,
+    )
+
+
+def _to_domain_membership(row: WorkflowMembershipRow) -> WorkflowMembership:
+    return WorkflowMembership(
+        id=row.id,
+        workflow_id=row.workflow_id,
+        dossier_id=row.dossier_id,
+        first_seen_at=row.first_seen_at,
+        last_seen_at=row.last_seen_at,
+        active=row.active,
+        missing_complete_polls=row.missing_complete_polls,
+        occurrence_number=row.occurrence_number,
+        captured_fields=json.loads(row.captured_fields_json),
+        fingerprint=row.fingerprint,
+        last_changed_at=row.last_changed_at,
     )
 
 
@@ -208,6 +248,73 @@ class SqlAlchemyPortalAccountRepository:
         row.last_poll_at = checked_at
         row.last_error = error
         row.session_status = status
+
+
+class SqlAlchemyWorkflowRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def get(self, workflow_id: int) -> Workflow | None:
+        row = self._session.get(WorkflowRow, workflow_id)
+        return _to_domain_workflow(row) if row else None
+
+    def get_by_key(self, account_id: int, key: str) -> Workflow | None:
+        row = self._session.execute(
+            select(WorkflowRow).where(
+                WorkflowRow.portal_account_id == account_id,
+                WorkflowRow.key == key,
+            )
+        ).scalar_one_or_none()
+        return _to_domain_workflow(row) if row else None
+
+    def list_for_account(self, account_id: int, *, enabled_only: bool = False) -> list[Workflow]:
+        statement = select(WorkflowRow).where(WorkflowRow.portal_account_id == account_id)
+        if enabled_only:
+            statement = statement.where(WorkflowRow.enabled.is_(True))
+        rows = self._session.execute(
+            statement.order_by(WorkflowRow.sort_order, WorkflowRow.id)
+        ).scalars()
+        return [_to_domain_workflow(row) for row in rows]
+
+
+class SqlAlchemyWorkflowMembershipRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def get(self, workflow_id: int, dossier_id: int) -> WorkflowMembership | None:
+        row = self._session.execute(
+            select(WorkflowMembershipRow).where(
+                WorkflowMembershipRow.workflow_id == workflow_id,
+                WorkflowMembershipRow.dossier_id == dossier_id,
+            )
+        ).scalar_one_or_none()
+        return _to_domain_membership(row) if row else None
+
+    def list_for_dossier(self, dossier_id: int) -> list[WorkflowMembership]:
+        rows = self._session.execute(
+            select(WorkflowMembershipRow)
+            .join(WorkflowRow, WorkflowRow.id == WorkflowMembershipRow.workflow_id)
+            .where(WorkflowMembershipRow.dossier_id == dossier_id)
+            .order_by(WorkflowRow.sort_order, WorkflowMembershipRow.id)
+        ).scalars()
+        return [_to_domain_membership(row) for row in rows]
+
+    def existing_state_by_workflow(
+        self, workflow_id: int
+    ) -> dict[str, ExistingDossierState]:
+        rows = self._session.execute(
+            select(WorkflowMembershipRow, DossierRow.record_id)
+            .join(DossierRow, DossierRow.id == WorkflowMembershipRow.dossier_id)
+            .where(WorkflowMembershipRow.workflow_id == workflow_id)
+        ).all()
+        return {
+            record_id: ExistingDossierState(
+                record_id=record_id,
+                active=membership.active,
+                missing_complete_polls=membership.missing_complete_polls,
+            )
+            for membership, record_id in rows
+        }
 
 
 class SqlAlchemyDossierRepository:

@@ -22,6 +22,7 @@ from tests.unit.infrastructure.fake_playwright import FakePage
 
 PROCEDURE_VALUE = "5ed644a2faf17c0015d8c367"
 START_ROUTE = Settings().omegaflow_start_route
+SUBMIT_SELECTOR = '#view_1874 form.kn-search_form button[type="submit"]'
 
 ZERO_ROW_HTML = '<html><body><div id="view_1874"><table><tbody></tbody></table></div></body></html>'
 LOADING_SHELL_HTML = '<html><body><div id="knack-body">Loading...</div></body></html>'
@@ -48,9 +49,9 @@ def _make_reader(
 def _base_page(content_html: str) -> FakePage:
     return FakePage(
         content_html=content_html,
-        existing={"#view_1874", "#view_1874 #kn-conn-1-field_219"},
-        counts={"#view_1874 #kn-submit-filters": 1},
-        visible={"#view_1874 #kn-submit-filters"},
+        existing={"#view_1874", "#view_1874 #kn-conn-1-field_219", SUBMIT_SELECTOR},
+        counts={"#view_1874": 1, SUBMIT_SELECTOR: 1},
+        visible={"#view_1874", SUBMIT_SELECTOR},
     )
 
 
@@ -87,7 +88,7 @@ async def test_selects_hidden_chosen_procedure_with_force_and_verifies_native_va
     assert any("dispatchEvent" in script for _, script in page.evaluate_calls)
     assert any("input" in script for _, script in page.evaluate_calls)
     assert any("change" in script for _, script in page.evaluate_calls)
-    assert page.clicked == ["#view_1874 #kn-submit-filters"]
+    assert page.clicked == [SUBMIT_SELECTOR]
 
 
 @pytest.mark.asyncio

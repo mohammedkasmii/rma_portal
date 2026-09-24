@@ -27,6 +27,8 @@ from rma_portal.domain.models import (
     PollRun,
     PortalAccount,
     User,
+    Workflow,
+    WorkflowMembership,
 )
 from rma_portal.domain.sync_rules import ExistingDossierState
 
@@ -91,6 +93,26 @@ class PortalAccountRepository(Protocol):
         """Record the outcome of a bounded authentication check (no poll_runs
         row -- unlike :meth:`mark_poll_finished`, no queue/dossier read
         happened). Never touches ``last_success_at``."""
+        ...
+
+
+class WorkflowRepository(Protocol):
+    def get(self, workflow_id: int) -> Workflow | None: ...
+
+    def get_by_key(self, account_id: int, key: str) -> Workflow | None: ...
+
+    def list_for_account(self, account_id: int, *, enabled_only: bool = False) -> list[Workflow]: ...
+
+
+class WorkflowMembershipRepository(Protocol):
+    def get(self, workflow_id: int, dossier_id: int) -> WorkflowMembership | None: ...
+
+    def list_for_dossier(self, dossier_id: int) -> list[WorkflowMembership]: ...
+
+    def existing_state_by_workflow(
+        self, workflow_id: int
+    ) -> dict[str, ExistingDossierState]:
+        """Return membership lifecycle keyed by the dossier's portal record id."""
         ...
 
 
@@ -194,6 +216,8 @@ class UnitOfWork(Protocol):
     """One SQLite transaction boundary spanning every repository below."""
 
     portal_accounts: PortalAccountRepository
+    workflows: WorkflowRepository
+    workflow_memberships: WorkflowMembershipRepository
     dossiers: DossierRepository
     notifications: NotificationRepository
     poll_runs: PollRunRepository

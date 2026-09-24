@@ -12,6 +12,8 @@ from rma_portal.infrastructure.db.repositories import (
     SqlAlchemyPollRunRepository,
     SqlAlchemyPortalAccountRepository,
     SqlAlchemyUserRepository,
+    SqlAlchemyWorkflowMembershipRepository,
+    SqlAlchemyWorkflowRepository,
 )
 
 
@@ -21,6 +23,8 @@ class SqlAlchemyUnitOfWork:
     def __init__(self, session: Session) -> None:
         self._session = session
         self.portal_accounts = SqlAlchemyPortalAccountRepository(session)
+        self.workflows = SqlAlchemyWorkflowRepository(session)
+        self.workflow_memberships = SqlAlchemyWorkflowMembershipRepository(session)
         self.dossiers = SqlAlchemyDossierRepository(session)
         self.notifications = SqlAlchemyNotificationRepository(session)
         self.poll_runs = SqlAlchemyPollRunRepository(session)
