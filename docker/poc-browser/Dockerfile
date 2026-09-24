@@ -22,6 +22,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PATH=/opt/venv/bin:$PATH \
     PYTHONPATH=/opt/rma-poc \
     HOME=/home/pocuser \
+    XDG_CACHE_HOME=/home/pocuser/.cache \
     DISPLAY=:99
 
 # Package names are the Ubuntu 24.04+/26.04 (t64) names.
@@ -39,6 +40,7 @@ COPY --from=ghcr.io/astral-sh/uv:0.11 /uv /usr/local/bin/uv
 
 RUN useradd --uid ${POC_UID} --create-home --home-dir /home/pocuser --shell /usr/sbin/nologin pocuser \
     && install -d -o pocuser -g pocuser \
+        /home/pocuser /home/pocuser/.cache /home/pocuser/.cache/camoufox \
         /var/lib/rma-poc /var/lib/rma-poc/profile /var/lib/rma-poc/state /tmp/rma-poc \
     && install -d -m 1777 /tmp/.X11-unix
 
