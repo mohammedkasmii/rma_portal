@@ -236,7 +236,9 @@ CATALOG: tuple[WorkflowDefinition, ...] = (
             _list("report_action", "field_768", "Rapport", FieldKind.ACTION),
         ),
         primary_date=("date_mission",),
-        evidence="688e53: one page, ten rows; one detail visit.",
+        submit_search_on_open=True,
+        evidence="688e53: one page, ten rows; one detail visit. Search-first view: live diagnostics "
+        "show view_1867 and view_1867-search rendered without a table until the form is submitted.",
     ),
     WorkflowDefinition(
         key="estimate_pending",
@@ -379,8 +381,10 @@ CATALOG: tuple[WorkflowDefinition, ...] = (
             _list("report_entry", "field_297", "Saisie rapport", FieldKind.ACTION),
             _list("report_preview", "field_768", "Aperçu / rapport", FieldKind.ACTION),
         ),
+        submit_search_on_open=True,
         evidence="688e53: two procedure-filter results, both one page. Splitting by procedure is a "
-        "catalog change, not a reader change.",
+        "catalog change, not a reader change. Search-first view: live diagnostics show view_1857 and "
+        "view_1857-search rendered without a table until the form is submitted.",
     ),
     WorkflowDefinition(
         key="collegial_first_expert",

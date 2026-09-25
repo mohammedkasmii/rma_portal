@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 
 import pytest
@@ -339,6 +340,98 @@ async def test_a_second_failure_is_final_after_exactly_one_retry_with_safe_diagn
     assert "views=['view_1874']" in error
     assert "?" not in error.split("Diagnostic :")[1].split("url=")[1].split(" ")[0]  # URL carries no query
     assert any("outcome=RETRY" in r.message for r in caplog.records)
+
+
+def _search_clicks(page) -> list[str]:
+    return [c for c in page.clicks if "kn-search_form" in c]
+
+
+def test_only_the_two_search_first_views_submit_their_search_on_open():
+    flagged = {d.key for d in CATALOG.definitions() if d.submit_search_on_open}
+    assert flagged == {"hifad_search", "report_pending"}
+    assert all(_definition(key).filter is None for key in flagged)  # the model never mixes both
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", ["hifad_search", "report_pending"])
+async def test_a_search_first_workflow_submits_its_initial_search_once_and_reads_rows(key):
+    definition = _definition(key)
+    queue = FakeQueue(definition, pages=[_rows("s", 3), _rows("t", 2)], header_after_filter=True)
+    reader, page = _reader(FakeSite({definition.route: [queue]}))
+    events = _spy_readiness(reader)
+
+    outcome = await reader.read_workflow(definition)
+
+    assert outcome.status is PollStatus.COMPLETE
+    assert len(outcome.snapshot.rows) == 5
+    assert len(_search_clicks(page)) == 1  # submitted exactly once, without touching any filter
+    assert not [c for c in page.select_calls if "kn-conn" in c[0]]
+    # root + search button first (no header), then the header once the search has run
+    assert events == [("wait", False, True), ("wait", True, False)]
+
+
+@pytest.mark.asyncio
+async def test_an_empty_search_first_result_is_complete_with_zero_rows():
+    definition = _definition("report_pending")
+    queue = FakeQueue(definition, pages=[[]], header_after_filter=True)
+    reader, page = _reader(FakeSite({definition.route: [queue]}))
+
+    outcome = await reader.read_workflow(definition)
+
+    assert outcome.status is PollStatus.COMPLETE
+    assert outcome.snapshot.rows == ()
+    assert len(_search_clicks(page)) == 1
+
+
+@pytest.mark.asyncio
+async def test_an_ordinary_unfiltered_workflow_never_submits_a_search():
+    definition = _definition("photos_pending")
+    reader, page = _reader(FakeSite({definition.route: [FakeQueue(definition, pages=[_rows("p", 2)])]}))
+
+    outcome = await reader.read_workflow(definition)
+
+    assert outcome.status is PollStatus.COMPLETE
+    assert _search_clicks(page) == []
+
+
+@pytest.mark.asyncio
+async def test_a_filtered_agreement_workflow_still_selects_its_filter_and_submits_once():
+    definition = _definition("agreement_normal")
+    queue = FakeQueue(definition, by_filter={definition.filter.value: [_rows("n", 2)]}, header_after_filter=True)
+    reader, page = _reader(FakeSite({definition.route: [queue]}))
+
+    outcome = await reader.read_workflow(definition)
+
+    assert outcome.status is PollStatus.COMPLETE
+    assert [v for s_, v in page.select_calls if "kn-conn" in s_] == [definition.filter.value]
+    assert len(_search_clicks(page)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_missing_root_keeps_the_full_timeout_and_a_missing_child_control_recovers_sooner(monkeypatch):
+    monkeypatch.setattr(camoufox_reader, "_QUEUE_VIEW_TIMEOUT_SECONDS", 0.3)
+    monkeypatch.setattr(camoufox_reader, "_CHILD_CONTROL_TIMEOUT_SECONDS", 0.02)
+    definition = _definition("agreement_normal")
+    rows = {definition.filter.value: [_rows("n", 1)]}
+
+    no_root = FakeQueue(definition, by_filter=rows, header_after_filter=True, root_missing=True)
+    reader, _ = _reader(FakeSite({definition.route: [no_root]}))
+    started = time.monotonic()
+    missing_root = await reader.read_workflow(definition)
+    root_elapsed = time.monotonic() - started
+
+    no_child = FakeQueue(definition, by_filter=rows, header_after_filter=True, controls_missing_loads=99)
+    reader, page = _reader(FakeSite({definition.route: [no_child]}))
+    started = time.monotonic()
+    missing_child = await reader.read_workflow(definition)
+    child_elapsed = time.monotonic() - started
+
+    assert missing_root.status is PollStatus.FAILED and missing_child.status is PollStatus.FAILED
+    assert "affichage de la file, après 0s" in missing_root.error  # the full queue timeout message
+    assert root_elapsed >= 0.55  # two attempts, each waiting the full timeout
+    assert "contrôles de la file" in missing_child.error
+    assert child_elapsed < 0.25  # the short bound, twice (one bounded recovery)
+    assert page.reload_calls == 1
 
 
 @pytest.mark.asyncio

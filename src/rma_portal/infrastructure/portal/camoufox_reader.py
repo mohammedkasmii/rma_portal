@@ -59,6 +59,10 @@ _WRITE_HOST_MARKERS = ("omegaflow.ma", "knack.com")
 _VERIFY_POLL_INTERVAL_MS = 500
 _QUEUE_VIEW_POLL_INTERVAL_MS = 500
 _QUEUE_VIEW_TIMEOUT_SECONDS = 45.0
+# Once the root is visible its child controls (filter select, search button) render within
+# moments; a root without them is a scene that was not rebuilt, so recovery starts much sooner
+# than the full timeout, which is kept for a root that never appears.
+_CHILD_CONTROL_TIMEOUT_SECONDS = 10.0
 
 AUTHENTICATED_VIEW_SELECTOR = "#view_1874"
 # Captured selector for the Garage agréé search form's submit button --
@@ -116,6 +120,11 @@ _ROWS_CHANGED_JS = """([rowsSelector, beforeIds]) => {
 
 
 _VIEW_IDS_JS = "() => Array.from(document.querySelectorAll('[id^=\"view_\"]')).map(e => e.id)"
+
+
+def _search_submit_selector(root: str) -> str:
+    """The view's search-form submit button, scoped to the workflow root (captured structure)."""
+    return f'{root} form.kn-search_form button[type="submit"]'
 
 
 class _StalePageResultError(RuntimeError):
@@ -382,7 +391,7 @@ class CamoufoxPortalReader:
         dossiers is valid and must produce a COMPLETE snapshot with zero
         rows (see docs/omegaflow-contract.md).
         """
-        submit_selector = f'{root} form.kn-search_form button[type="submit"]'
+        submit_selector = _search_submit_selector(root)
         with log_stage(logger, "search_submission", selector=submit_selector):
             button = page.locator(submit_selector)
             try:
@@ -489,8 +498,11 @@ class CamoufoxPortalReader:
         a root that rendered without its controls is a scene that was not rebuilt.
         """
         deadline = time.monotonic() + _QUEUE_VIEW_TIMEOUT_SECONDS
+        root_seen_at: float | None = None
         while True:
             await self._assert_authenticated()
+            if root_seen_at is None and await is_authenticated_view_present(page, root):
+                root_seen_at = time.monotonic()
             if (
                 await is_authenticated_view_present(page, root)
                 and (
@@ -500,7 +512,17 @@ class CamoufoxPortalReader:
                 and (require_selector is None or await page.locator(require_selector).count() > 0)
             ):
                 return
-            if time.monotonic() >= deadline:
+            now = time.monotonic()
+            if (
+                require_selector is not None
+                and root_seen_at is not None
+                and now - root_seen_at >= _CHILD_CONTROL_TIMEOUT_SECONDS
+            ):
+                raise PortalReadError(
+                    "Délai dépassé en attendant les contrôles de la file OmegaFlow "
+                    f"(étape: contrôles de la file, après {_CHILD_CONTROL_TIMEOUT_SECONDS:.0f}s)."
+                )
+            if now >= deadline:
                 raise PortalReadError(
                     "Délai dépassé en attendant la file OmegaFlow "
                     f"(étape: affichage de la file, après {_QUEUE_VIEW_TIMEOUT_SECONDS:.0f}s)."
@@ -566,6 +588,11 @@ class CamoufoxPortalReader:
                 await self._apply_filter(page, root, spec.control_selector, spec.value, spec.label)
                 # A filtered view (e.g. the shared agreement view) only renders its table once the
                 # filter is submitted: the header is the evidence, even for zero rows.
+                await self._wait_for_queue_view(page, root, require_table_header=True)
+            elif definition.submit_search_on_open:
+                # Search-first view: submit its untouched search form; the table header (also
+                # rendered, with zero rows, for an empty result) is then the evidence.
+                await self._submit_search(page, root)
                 await self._wait_for_queue_view(page, root, require_table_header=True)
             await self._wait_for_stable_rows(page, root)
 
@@ -672,14 +699,19 @@ class CamoufoxPortalReader:
         submitted, see ``read_workflow``); an unfiltered workflow requires its table header.
         """
         spec = definition.filter
-        control = f"{definition.root_selector} {spec.control_selector}" if spec else None
+        if spec is not None:
+            control: str | None = f"{definition.root_selector} {spec.control_selector}"
+        elif definition.submit_search_on_open:
+            control = _search_submit_selector(definition.root_selector)
+        else:
+            control = None
         for attempt in (1, 2):
             await self._goto_route_via_home(page, definition.route, reload=attempt == 2)
             try:
                 await self._wait_for_queue_view(
                     page,
                     definition.root_selector,
-                    require_table_header=spec is None,
+                    require_table_header=control is None,
                     require_selector=control,
                 )
                 return
@@ -714,6 +746,7 @@ class CamoufoxPortalReader:
                 None if spec is None else await page.locator(f"{root} {spec.control_selector}").count() > 0
             )
             header_found = await page.locator(f"{root} table thead th").count() > 0
+            search_found = await page.locator(_search_submit_selector(root)).count() > 0
             view_ids = await page.evaluate(_VIEW_IDS_JS)
             url = strip_query(page.url) if isinstance(getattr(page, "url", None), str) else "?"
         except Exception as exc:  # noqa: BLE001 - diagnostics must never mask the real failure
@@ -722,7 +755,7 @@ class CamoufoxPortalReader:
         return (
             f"workflow={definition.key} route={definition.route} url={url} root={root} "
             f"root_present={root_found} filter_present={filter_found} "
-            f"header_present={header_found} views={ids}"
+            f"search_button_present={search_found} header_present={header_found} views={ids}"
         )
 
     async def read_dossier_detail_fields(

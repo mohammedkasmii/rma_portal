@@ -138,6 +138,11 @@ class WorkflowDefinition:
     closes the upstream work, which employees keep control of."""
 
     filter: FilterSpec | None = None
+    submit_search_on_open: bool = False
+    """Technical: a search-first Knack view renders its search form but no table until the form
+    is submitted. The reader submits it once, unchanged, right after opening the view, then
+    waits for the table header. Ignored when ``filter`` is set (the filter submits the form)."""
+
     catalog_version: int = 1
     evidence: str = ""
     """Which capture established this contract (never customer data)."""

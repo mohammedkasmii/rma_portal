@@ -41,6 +41,8 @@ class FakeQueue:
     header_after_filter: bool = False
     """The shared agreement view: its table (and header) only render once the filter is submitted."""
     login_required: bool = False
+    root_missing: bool = False
+    """The root never renders (a route that shows nothing)."""
     controls_missing_loads: int = 0
     """Scene builds (navigation or reload) that render the root without its filter controls."""
     # runtime state
@@ -71,8 +73,8 @@ class FakeQueue:
         self.page_index = 0
         self.active_filter = None
         self.pending_filter = ""
-        self.root_ready = not dirty
-        self.controls_ready = not dirty and self.missing_left <= 0
+        self.root_ready = not dirty and not self.root_missing
+        self.controls_ready = self.root_ready and self.missing_left <= 0
         if self.missing_left > 0:
             self.missing_left -= 1
 
@@ -192,8 +194,11 @@ class FakeKnackPage:
             return 1
         if selector.endswith("table thead th"):
             return len(queue.definition.list_fields) if queue.header_visible else 0
-        if "kn-conn" in selector or "kn-search_form" in selector:
+        if "kn-conn" in selector:
             return 1 if queue.definition.filter is not None and queue.controls_ready else 0
+        if "kn-search_form" in selector:
+            searchable = queue.definition.filter is not None or queue.definition.submit_search_on_open
+            return 1 if searchable and queue.controls_ready else 0
         return 0
 
     def click(self, selector: str) -> None:
