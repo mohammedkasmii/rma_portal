@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from rma_portal.application.dto import DashboardRow, DossierDetails, QueueRow
+from rma_portal.application.dto import DashboardRow
 from rma_portal.domain.enums import (
     NotificationClass,
     NotificationKind,
@@ -23,28 +23,26 @@ from rma_portal.domain.models import (
     Dossier,
     DossierDates,
     DossierNote,
-    DossierWork,
     DuplicateWorkflowError,
     Notification,
-    PollRun,
     PortalAccount,
     User,
     Workflow,
     WorkflowMembership,
-    WorkStatusConflict,
 )
 from rma_portal.domain.sync_rules import ExistingDossierState
+from rma_portal.domain.workflow_definition import COMMON_FIELD_KEYS
 from rma_portal.infrastructure.db.models import (
     DossierNoteRow,
     DossierRow,
-    DossierWorkRow,
     NotificationReadRow,
     NotificationRow,
-    PollRunRow,
     PortalAccountRow,
     UserRow,
     WorkflowMembershipRow,
+    WorkflowOccurrenceRow,
     WorkflowRow,
+    WorkflowWorkRow,
 )
 
 
@@ -61,6 +59,26 @@ def _dossier_dates(row: DossierRow) -> DossierDates:
         date_photos_avant=row.date_photos_avant,
         date_photos_avant_raw=row.date_photos_avant_raw,
     )
+
+
+def _detail_fields(row: DossierRow) -> dict[str, str]:
+    """Stored shared-detail values, including the five dates V1 kept in columns.
+
+    A dossier whose V1 detail read succeeded counts as having read those five
+    fields (blank included), so the V2 cutover does not re-read every Garage
+    agréé dossier just because ``detail_fields_json`` did not exist yet.
+    """
+    values: dict[str, str] = json.loads(row.detail_fields_json or "{}")
+    if row.detail_complete:
+        for key, raw in (
+            ("date_creation", row.date_creation_raw),
+            ("date_premiere_fin_prevue", row.date_premiere_fin_prevue_raw),
+            ("date_fin_travaux_prevue", row.date_fin_travaux_prevue_raw),
+            ("date_envoi_devis_garage", row.date_envoi_devis_garage_raw),
+            ("date_photos_avant", row.date_photos_avant_raw),
+        ):
+            values.setdefault(key, raw)
+    return values
 
 
 def _to_domain_dossier(row: DossierRow) -> Dossier:
@@ -86,8 +104,8 @@ def _to_domain_dossier(row: DossierRow) -> Dossier:
         last_seen_at=row.last_seen_at,
         active=row.active,
         missing_complete_polls=row.missing_complete_polls,
-        detail_fields=json.loads(row.detail_fields_json or "{}"),
-        detail_fetched_at=row.detail_fetched_at,
+        detail_fields=_detail_fields(row),
+        detail_fetched_at=row.detail_fetched_at or (row.last_seen_at if row.detail_complete else None),
     )
 
 
@@ -160,30 +178,6 @@ def _to_domain_membership(row: WorkflowMembershipRow) -> WorkflowMembership:
     )
 
 
-def _to_domain_poll_run(row: PollRunRow) -> PollRun:
-    return PollRun(
-        id=row.id,
-        portal_account_id=row.portal_account_id,
-        started_at=row.started_at,
-        completed_at=row.completed_at,
-        status=row.status,
-        rows_seen=row.rows_seen,
-        pages_seen=row.pages_seen,
-        details_failed=row.details_failed,
-        error=row.error,
-    )
-
-
-def _to_domain_work(row: DossierWorkRow) -> DossierWork:
-    return DossierWork(
-        dossier_id=row.dossier_id,
-        status=row.status,
-        version=row.version,
-        updated_by=row.updated_by,
-        updated_at=row.updated_at,
-    )
-
-
 def _to_domain_note(row: DossierNoteRow) -> DossierNote:
     return DossierNote(
         id=row.id,
@@ -193,20 +187,6 @@ def _to_domain_note(row: DossierNoteRow) -> DossierNote:
         created_at=row.created_at,
         workflow_membership_id=row.workflow_membership_id,
     )
-
-
-def _apply_row_fields(orm_row: DossierRow, row: QueueRow) -> None:
-    orm_row.dossier_number = row.dossier_number
-    orm_row.insured_name = row.insured_name
-    orm_row.procedure = row.procedure
-    orm_row.registration = row.registration
-    orm_row.garage = row.garage
-    orm_row.estimate_amount_raw = row.estimate_amount_raw
-    orm_row.portal_status = row.portal_status
-    orm_row.city = row.city
-    orm_row.observation_count = row.observation_count
-    orm_row.agreement_login = row.agreement_login
-    orm_row.details_href = row.details_href
 
 
 class SqlAlchemyPortalAccountRepository:
@@ -527,17 +507,6 @@ class SqlAlchemyDossierRepository:
             )
         ).scalar_one_or_none()
 
-    def existing_state_by_account(self, account_id: int) -> dict[str, ExistingDossierState]:
-        rows = self._session.execute(
-            select(DossierRow.record_id, DossierRow.active, DossierRow.missing_complete_polls).where(
-                DossierRow.portal_account_id == account_id
-            )
-        ).all()
-        return {
-            record_id: ExistingDossierState(record_id, active, missing)
-            for record_id, active, missing in rows
-        }
-
     def get_by_record_id(self, account_id: int, record_id: str) -> Dossier | None:
         row = self._get_row(account_id, record_id)
         return _to_domain_dossier(row) if row else None
@@ -546,117 +515,131 @@ class SqlAlchemyDossierRepository:
         row = self._session.get(DossierRow, dossier_id)
         return _to_domain_dossier(row) if row else None
 
-    def create_from_row(self, account_id: int, row: QueueRow, now: datetime) -> Dossier:
-        orm_row = DossierRow(
-            portal_account_id=account_id,
-            record_id=row.record_id,
-            first_seen_at=now,
-            last_seen_at=now,
-            active=True,
-            missing_complete_polls=0,
-            detail_complete=False,
+    def upsert_from_workflow_row(
+        self,
+        account_id: int,
+        record_id: str,
+        details_href: str,
+        common_values: Mapping[str, str],
+        now: datetime,
+    ) -> tuple[Dossier, bool, bool]:
+        """Create or refresh the shared dossier a queue row belongs to.
+
+        Only the common columns the row's own view renders are written, so a
+        queue that lacks (say) the garage column never blanks a value another
+        queue supplied. Returns ``(dossier, created, portal_status_changed)``.
+        """
+        row = self._get_row(account_id, record_id)
+        created = row is None
+        if row is None:
+            row = DossierRow(
+                portal_account_id=account_id,
+                record_id=record_id,
+                first_seen_at=now,
+                last_seen_at=now,
+                active=True,
+                missing_complete_polls=0,
+                detail_complete=False,
+            )
+            self._session.add(row)
+        status_changed = (
+            not created
+            and "portal_status" in common_values
+            and row.portal_status != common_values["portal_status"]
         )
-        _apply_row_fields(orm_row, row)
-        self._session.add(orm_row)
+        for key, value in common_values.items():
+            if key in COMMON_FIELD_KEYS:
+                setattr(row, key, value)
+        if details_href:
+            row.details_href = details_href
+        row.last_seen_at = now
+        row.active = True
+        row.missing_complete_polls = 0
         self._session.flush()
-        self._session.add(
-            DossierWorkRow(
-                dossier_id=orm_row.id,
-                status=WorkStatus.TO_DO,
-                version=1,
-                updated_by=None,
-                updated_at=now,
-            )
-        )
-        return _to_domain_dossier(orm_row)
+        return _to_domain_dossier(row), created, status_changed
 
-    def touch(self, account_id: int, row: QueueRow, now: datetime) -> tuple[Dossier, bool]:
-        orm_row = self._get_row(account_id, row.record_id)
-        if orm_row is None:
-            raise LookupError(f"dossier {row.record_id} not found for account {account_id}")
-        status_changed = orm_row.portal_status != row.portal_status
-        _apply_row_fields(orm_row, row)
-        orm_row.last_seen_at = now
-        orm_row.missing_complete_polls = 0
-        return _to_domain_dossier(orm_row), status_changed
+    def set_active(self, dossier_id: int, active: bool) -> None:
+        row = self._session.get(DossierRow, dossier_id)
+        if row is not None:
+            row.active = active
 
-    def reactivate(self, account_id: int, row: QueueRow, now: datetime) -> Dossier:
-        orm_row = self._get_row(account_id, row.record_id)
-        if orm_row is None:
-            raise LookupError(f"dossier {row.record_id} not found for account {account_id}")
-        _apply_row_fields(orm_row, row)
-        orm_row.active = True
-        orm_row.missing_complete_polls = 0
-        orm_row.last_seen_at = now
-        orm_row.detail_complete = False
-        orm_row.detail_error = None
-        return _to_domain_dossier(orm_row)
-
-    def apply_absence_increment(self, account_id: int, record_id: str, count: int) -> None:
-        orm_row = self._get_row(account_id, record_id)
-        if orm_row is not None:
-            orm_row.missing_complete_polls = count
-
-    def deactivate(self, account_id: int, record_id: str) -> None:
-        orm_row = self._get_row(account_id, record_id)
-        if orm_row is not None:
-            orm_row.active = False
-
-    def save_details(self, dossier_id: int, details: DossierDetails) -> None:
-        orm_row = self._session.get(DossierRow, dossier_id)
-        if orm_row is None:
+    def save_detail_values(
+        self,
+        dossier_id: int,
+        values: Mapping[str, str],
+        dates: DossierDates | None,
+        fetched_at: datetime,
+    ) -> None:
+        row = self._session.get(DossierRow, dossier_id)
+        if row is None:
             return
-        dates = details.dates
-        orm_row.date_creation = dates.date_creation
-        orm_row.date_creation_raw = dates.date_creation_raw
-        orm_row.date_premiere_fin_prevue = dates.date_premiere_fin_prevue
-        orm_row.date_premiere_fin_prevue_raw = dates.date_premiere_fin_prevue_raw
-        orm_row.date_fin_travaux_prevue = dates.date_fin_travaux_prevue
-        orm_row.date_fin_travaux_prevue_raw = dates.date_fin_travaux_prevue_raw
-        orm_row.date_envoi_devis_garage = dates.date_envoi_devis_garage
-        orm_row.date_envoi_devis_garage_raw = dates.date_envoi_devis_garage_raw
-        orm_row.date_photos_avant = dates.date_photos_avant
-        orm_row.date_photos_avant_raw = dates.date_photos_avant_raw
-        orm_row.detail_complete = details.detail_complete
-        orm_row.detail_error = details.detail_error
+        merged: dict[str, str] = json.loads(row.detail_fields_json or "{}")
+        merged.update(values)
+        row.detail_fields_json = json.dumps(merged, sort_keys=True, ensure_ascii=False)
+        if dates is not None:
+            row.date_creation = dates.date_creation
+            row.date_creation_raw = dates.date_creation_raw
+            row.date_premiere_fin_prevue = dates.date_premiere_fin_prevue
+            row.date_premiere_fin_prevue_raw = dates.date_premiere_fin_prevue_raw
+            row.date_fin_travaux_prevue = dates.date_fin_travaux_prevue
+            row.date_fin_travaux_prevue_raw = dates.date_fin_travaux_prevue_raw
+            row.date_envoi_devis_garage = dates.date_envoi_devis_garage
+            row.date_envoi_devis_garage_raw = dates.date_envoi_devis_garage_raw
+            row.date_photos_avant = dates.date_photos_avant
+            row.date_photos_avant_raw = dates.date_photos_avant_raw
+        row.detail_complete = True
+        row.detail_error = None
+        row.detail_fetched_at = fetched_at
 
-    def dossiers_needing_detail_retry(self, account_id: int) -> list[Dossier]:
-        rows = self._session.execute(
-            select(DossierRow).where(
-                DossierRow.portal_account_id == account_id,
-                DossierRow.active.is_(True),
-                DossierRow.detail_complete.is_(False),
-            )
-        ).scalars().all()
-        return [_to_domain_dossier(row) for row in rows]
+    def mark_detail_failed(self, dossier_id: int, error: str, attempted_at: datetime) -> None:
+        """Record a failed detail read without touching any stored value.
 
-    def list_for_dashboard(self, *, user_id: int) -> list[DashboardRow]:
+        ``detail_fetched_at`` doubles as "last attempt", so a failing page is retried
+        at the workflow's refresh interval instead of on every poll.
+        """
+        row = self._session.get(DossierRow, dossier_id)
+        if row is None:
+            return
+        row.detail_error = error[:1000]
+        row.detail_complete = False
+        row.detail_fetched_at = attempted_at
+
+    def list_for_dashboard(
+        self, *, user_id: int, workflow_key: str = "agreement_garage"
+    ) -> list[DashboardRow]:
+        """The legacy (single-queue) dashboard: active members of one workflow."""
         unread_count = (
             select(func.count())
             .select_from(NotificationRow)
+            .join(
+                WorkflowOccurrenceRow,
+                WorkflowOccurrenceRow.id == NotificationRow.workflow_occurrence_id,
+            )
             .outerjoin(
                 NotificationReadRow,
                 (NotificationReadRow.notification_id == NotificationRow.id)
                 & (NotificationReadRow.user_id == user_id),
             )
-            .where(NotificationRow.dossier_id == DossierRow.id)
+            .where(WorkflowOccurrenceRow.membership_id == WorkflowMembershipRow.id)
             .where(NotificationReadRow.notification_id.is_(None))
-            .correlate(DossierRow)
+            .correlate(WorkflowMembershipRow)
             .scalar_subquery()
         )
         detection_time = (
-            select(func.max(NotificationRow.detected_at))
-            .where(NotificationRow.dossier_id == DossierRow.id)
-            .correlate(DossierRow)
+            select(func.max(WorkflowOccurrenceRow.detected_at))
+            .where(WorkflowOccurrenceRow.membership_id == WorkflowMembershipRow.id)
+            .correlate(WorkflowMembershipRow)
             .scalar_subquery()
         )
-        stmt = (
-            select(DossierRow, DossierWorkRow, unread_count, detection_time)
-            .outerjoin(DossierWorkRow, DossierWorkRow.dossier_id == DossierRow.id)
-            .where(DossierRow.active.is_(True))
+        statement = (
+            select(DossierRow, WorkflowWorkRow, unread_count, detection_time)
+            .join(WorkflowMembershipRow, WorkflowMembershipRow.dossier_id == DossierRow.id)
+            .join(WorkflowRow, WorkflowRow.id == WorkflowMembershipRow.workflow_id)
+            .outerjoin(WorkflowWorkRow, WorkflowWorkRow.membership_id == WorkflowMembershipRow.id)
+            .where(WorkflowRow.key == workflow_key, WorkflowMembershipRow.active.is_(True))
         )
         results = []
-        for dossier_row, work_row, unread, detected in self._session.execute(stmt).all():
+        for dossier_row, work_row, unread, detected in self._session.execute(statement).all():
             results.append(
                 DashboardRow(
                     dossier_id=dossier_row.id,
@@ -680,14 +663,6 @@ class SqlAlchemyDossierRepository:
 class SqlAlchemyNotificationRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
-
-    def create(
-        self, dossier_id: int, kind: NotificationKind, detected_at: datetime
-    ) -> Notification:
-        row = NotificationRow(dossier_id=dossier_id, kind=kind, detected_at=detected_at)
-        self._session.add(row)
-        self._session.flush()
-        return Notification(id=row.id, dossier_id=row.dossier_id, kind=row.kind, detected_at=row.detected_at)
 
     def create_for_occurrence(
         self,
@@ -778,82 +753,6 @@ class SqlAlchemyNotificationRepository:
                 NotificationReadRow(notification_id=notification_id, user_id=user_id, seen_at=seen_at)
             )
 
-    def acknowledge_dossier(self, dossier_id: int, user_id: int, seen_at: datetime) -> None:
-        already_read = select(NotificationReadRow.notification_id).where(
-            NotificationReadRow.user_id == user_id
-        )
-        unread_ids = self._session.execute(
-            select(NotificationRow.id).where(
-                NotificationRow.dossier_id == dossier_id,
-                NotificationRow.id.notin_(already_read),
-            )
-        ).scalars().all()
-        for notification_id in unread_ids:
-            self._session.add(
-                NotificationReadRow(notification_id=notification_id, user_id=user_id, seen_at=seen_at)
-            )
-
-    def unread_count_for_user(self, user_id: int) -> int:
-        already_read = select(NotificationReadRow.notification_id).where(
-            NotificationReadRow.user_id == user_id
-        )
-        return self._session.execute(
-            select(func.count()).select_from(NotificationRow).where(
-                NotificationRow.id.notin_(already_read)
-            )
-        ).scalar_one()
-
-    def is_unread_for_user(self, dossier_id: int, user_id: int) -> bool:
-        already_read = select(NotificationReadRow.notification_id).where(
-            NotificationReadRow.user_id == user_id
-        )
-        count = self._session.execute(
-            select(func.count()).select_from(NotificationRow).where(
-                NotificationRow.dossier_id == dossier_id,
-                NotificationRow.id.notin_(already_read),
-            )
-        ).scalar_one()
-        return count > 0
-
-
-class SqlAlchemyPollRunRepository:
-    def __init__(self, session: Session) -> None:
-        self._session = session
-
-    def start(self, account_id: int, started_at: datetime) -> PollRun:
-        row = PollRunRow(
-            portal_account_id=account_id,
-            started_at=started_at,
-            status=PollStatus.FAILED,
-            rows_seen=0,
-            pages_seen=0,
-            details_failed=0,
-        )
-        self._session.add(row)
-        self._session.flush()
-        return _to_domain_poll_run(row)
-
-    def finish(
-        self,
-        poll_run_id: int,
-        *,
-        status: PollStatus,
-        completed_at: datetime,
-        rows_seen: int,
-        pages_seen: int,
-        details_failed: int,
-        error: str | None,
-    ) -> PollRun:
-        row = self._session.get(PollRunRow, poll_run_id)
-        if row is None:
-            raise LookupError(f"poll run {poll_run_id} not found")
-        row.status = status
-        row.completed_at = completed_at
-        row.rows_seen = rows_seen
-        row.pages_seen = pages_seen
-        row.details_failed = details_failed
-        row.error = error
-        return _to_domain_poll_run(row)
 
 
 class SqlAlchemyUserRepository:
@@ -898,45 +797,25 @@ class SqlAlchemyUserRepository:
             row.password_hash = password_hash
 
 
-class SqlAlchemyDossierWorkRepository:
-    def __init__(self, session: Session) -> None:
-        self._session = session
-
-    def get(self, dossier_id: int) -> DossierWork | None:
-        row = self._session.get(DossierWorkRow, dossier_id)
-        return _to_domain_work(row) if row else None
-
-    def upsert(
-        self,
-        dossier_id: int,
-        status: WorkStatus,
-        expected_version: int | None,
-        updated_by: int,
-        updated_at: datetime,
-    ) -> DossierWork:
-        row = self._session.get(DossierWorkRow, dossier_id)
-        if row is None:
-            row = DossierWorkRow(
-                dossier_id=dossier_id, status=status, version=1, updated_by=updated_by, updated_at=updated_at
-            )
-            self._session.add(row)
-            self._session.flush()
-            return _to_domain_work(row)
-        if expected_version is not None and expected_version != row.version:
-            raise WorkStatusConflict(dossier_id, expected_version, row.version)
-        row.status = status
-        row.version += 1
-        row.updated_by = updated_by
-        row.updated_at = updated_at
-        return _to_domain_work(row)
-
-
 class SqlAlchemyDossierNoteRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
 
-    def add(self, dossier_id: int, author_id: int, body: str, created_at: datetime) -> DossierNote:
-        row = DossierNoteRow(dossier_id=dossier_id, author_id=author_id, body=body, created_at=created_at)
+    def add(
+        self,
+        dossier_id: int,
+        author_id: int,
+        body: str,
+        created_at: datetime,
+        workflow_membership_id: int | None = None,
+    ) -> DossierNote:
+        row = DossierNoteRow(
+            dossier_id=dossier_id,
+            author_id=author_id,
+            body=body,
+            created_at=created_at,
+            workflow_membership_id=workflow_membership_id,
+        )
         self._session.add(row)
         self._session.flush()
         return _to_domain_note(row)

@@ -25,7 +25,6 @@ def _reader(site: FakeSite) -> tuple[CamoufoxPortalReader, FakeKnackPage]:
         lock_path=Path("unused-lock"),
         start_route=f"{BASE_URL}/#dossiers-en-instance-accord/",
         base_url=BASE_URL,
-        procedure_value="unused",
         timezone_id="Africa/Casablanca",
         session_state_path=Path("unused-state"),
         locale="fr-FR",

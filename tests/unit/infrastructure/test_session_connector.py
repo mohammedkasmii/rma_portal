@@ -3,7 +3,7 @@
 Pure asyncio tests (no web layer, no real Camoufox) -- ``open_and_wait``,
 ``verify_session`` and ``run_sync`` are injected as controllable fakes, and
 the end-to-end scenarios reuse the same ``FakePortalReaderFactory``/
-``SyncAgreementQueue`` test doubles already used for the scheduler/manual-
+``SyncWorkflows`` test doubles already used for the scheduler/manual-
 refresh tests, so this exercises the *real* authentication-detection path
 rather than a second implementation.
 
@@ -27,14 +27,20 @@ from rma_portal.application.dto import (
     BrowserProfileLockedError,
     BrowserTeardownError,
     PortalAuthRequiredError,
-    QueueSnapshot,
 )
-from rma_portal.application.sync_service import SyncAgreementQueue
 from rma_portal.config import Settings
 from rma_portal.infrastructure.portal.profile_lock import acquire_profile_lock
 from rma_portal.infrastructure.portal.session_connector import SessionConnector
-from tests.unit.application.fakes import FakePortalReaderFactory
-from tests.unit.application.test_sync_service import _row
+from tests.support import make_sync, seed_workflows
+from tests.unit.application.fakes import FakePortalReaderFactory, auth_required, complete, row
+
+GARAGE = "agreement_garage"
+
+
+def _garage_members(uow_factory, account_id: int) -> dict:
+    with uow_factory() as uow:
+        workflow = uow.workflows.get_by_key(account_id, GARAGE)
+        return uow.workflow_memberships.by_record_id(workflow.id)
 
 
 def _settings(tmp_path) -> Settings:
@@ -73,7 +79,7 @@ class _ControllableOpenAndWait:
 
 
 class _ControllableVerify:
-    """Simulates ``SyncAgreementQueue.verify_session``: a bounded, controllable check."""
+    """Simulates ``SyncWorkflows.verify_session``: a bounded, controllable check."""
 
     def __init__(self, *, result: bool = True, hold: bool = False) -> None:
         self.calls: list[float] = []
@@ -407,9 +413,9 @@ async def test_profile_lock_is_released_before_verification_runs(tmp_path):
 @pytest.mark.asyncio
 async def test_closing_without_login_results_in_auth_required(tmp_path, uow_factory, portal_account_id):
     reader_factory = FakePortalReaderFactory(
-        polls=[PortalAuthRequiredError("toujours sur la page de connexion")]
+        verify_result=PortalAuthRequiredError("toujours sur la page de connexion")
     )
-    sync_service = SyncAgreementQueue(reader_factory, uow_factory)
+    sync_service = make_sync(reader_factory, uow_factory)
     fake = _ControllableOpenAndWait()
     connector = SessionConnector(
         _settings(tmp_path),
@@ -434,17 +440,17 @@ async def test_successful_login_results_in_ready_before_the_full_sync_finishes(
     tmp_path, uow_factory, portal_account_id
 ):
     """Regression: READY must appear as soon as the bounded check succeeds,
-    not after the full dossier baseline/enrichment -- proven here by holding
-    the fire-and-forget sync itself back with a gate the test controls."""
-    row = _row("a")
+    not after the full baseline/enrichment -- proven here by holding the
+    fire-and-forget sync itself back with a gate the test controls."""
+    seed_workflows(uow_factory, only=[GARAGE])
     sync_gate = asyncio.Event()
     reader_factory = FakePortalReaderFactory(
-        polls=[
-            QueueSnapshot(rows=(), pages_seen=1),  # verify: authenticated
-            QueueSnapshot(rows=(row,), pages_seen=1),  # full sync: baseline
+        [
+            {},  # verify: authenticated
+            {GARAGE: complete(GARAGE, row("a"))},  # full sync: baseline
         ]
     )
-    sync_service = SyncAgreementQueue(reader_factory, uow_factory)
+    sync_service = make_sync(reader_factory, uow_factory)
 
     async def gated_run_sync():
         await sync_gate.wait()
@@ -466,33 +472,28 @@ async def test_successful_login_results_in_ready_before_the_full_sync_finishes(
 
     with uow_factory() as uow:
         account = uow.portal_accounts.get(portal_account_id)
-        state = uow.dossiers.existing_state_by_account(portal_account_id)
     assert account.session_status.value == "READY"
     # The full sync has not even started yet -- still held by the gate.
-    assert state == {}
+    assert _garage_members(uow_factory, portal_account_id) == {}
     assert sync_service.is_running is False
 
-    def _dossier_created() -> bool:
-        with uow_factory() as uow:
-            return bool(uow.dossiers.existing_state_by_account(portal_account_id))
-
     sync_gate.set()
-    await _wait_until(_dossier_created)
+    await _wait_until(lambda: bool(_garage_members(uow_factory, portal_account_id)))
 
 
 @pytest.mark.asyncio
 async def test_later_scheduled_poll_flips_ready_to_auth_required_and_preserves_dossiers(
     tmp_path, uow_factory, portal_account_id
 ):
-    row = _row("a")
+    seed_workflows(uow_factory, only=[GARAGE])
     reader_factory = FakePortalReaderFactory(
-        polls=[
-            QueueSnapshot(rows=(), pages_seen=1),  # the connect-triggered bounded check
-            QueueSnapshot(rows=(row,), pages_seen=1),  # the connect-triggered full sync: baseline
-            PortalAuthRequiredError("session expirée"),  # a later scheduled poll
+        [
+            {},  # the connect-triggered bounded check
+            {GARAGE: complete(GARAGE, row("a"))},  # the connect-triggered full sync: baseline
+            {GARAGE: auth_required(GARAGE)},  # a later scheduled poll
         ]
     )
-    sync_service = SyncAgreementQueue(reader_factory, uow_factory)
+    sync_service = make_sync(reader_factory, uow_factory)
     fake = _ControllableOpenAndWait()
     connector = SessionConnector(
         _settings(tmp_path),
@@ -510,20 +511,19 @@ async def test_later_scheduled_poll_flips_ready_to_auth_required_and_preserves_d
 
     with uow_factory() as uow:
         account = uow.portal_accounts.get(portal_account_id)
-        state = uow.dossiers.existing_state_by_account(portal_account_id)
     assert account.session_status.value == "READY"
-    assert state["a"].active is True
+    assert _garage_members(uow_factory, portal_account_id)["a"].active is True
 
-    # A later scheduled poll (same SyncAgreementQueue the poller uses).
+    # A later scheduled poll (same SyncWorkflows the poller uses).
     result = await sync_service.execute()
 
     assert result.status.value == "AUTH_REQUIRED"
     with uow_factory() as uow:
         account = uow.portal_accounts.get(portal_account_id)
-        state = uow.dossiers.existing_state_by_account(portal_account_id)
     assert account.session_status.value == "AUTH_REQUIRED"
-    assert state["a"].active is True
-    assert state["a"].missing_complete_polls == 0
+    member = _garage_members(uow_factory, portal_account_id)["a"]
+    assert member.active is True
+    assert member.missing_complete_polls == 0
 
 
 @pytest.mark.asyncio

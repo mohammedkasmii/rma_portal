@@ -5,12 +5,14 @@ from starlette.testclient import TestClient
 
 from rma_portal.application.accounts import AccountService
 from rma_portal.application.dossier_service import DossierService
-from rma_portal.application.sync_service import SyncAgreementQueue
+from rma_portal.application.workflow_catalog_sync import WorkflowCatalogSync
 from rma_portal.bootstrap import Application
 from rma_portal.domain.enums import Role
 from rma_portal.infrastructure.portal.session_connector import SessionConnector
+from rma_portal.infrastructure.portal.workflow_catalog import default_catalog
 from rma_portal.infrastructure.security.password_hasher import Argon2PasswordHasher
 from rma_portal.web.app import create_app
+from tests.support import make_sync, seed_workflows
 from tests.unit.application.fakes import FakePortalReaderFactory
 from tests.unit.infrastructure.fakes import FakeOpenAndWait
 
@@ -25,11 +27,12 @@ def fake_open_and_wait() -> FakeOpenAndWait:
 
 @pytest.fixture
 def application(settings, uow_factory, portal_account_id, fake_open_and_wait) -> Application:
-    reader_factory = FakePortalReaderFactory(polls=[])
+    seed_workflows(uow_factory, only=["agreement_garage"])
+    reader_factory = FakePortalReaderFactory([])
     hasher = Argon2PasswordHasher()
     account_service = AccountService(uow_factory, hasher)
     dossier_service = DossierService(uow_factory)
-    sync_service = SyncAgreementQueue(reader_factory, uow_factory)
+    sync_service = make_sync(reader_factory, uow_factory)
     session_connector = SessionConnector(
         settings,
         verify_session=sync_service.verify_session,
@@ -43,6 +46,7 @@ def application(settings, uow_factory, portal_account_id, fake_open_and_wait) ->
         uow_factory=uow_factory,
         reader_factory=reader_factory,
         sync_service=sync_service,
+        catalog_sync=WorkflowCatalogSync(uow_factory, default_catalog()),
         account_service=account_service,
         dossier_service=dossier_service,
         session_connector=session_connector,

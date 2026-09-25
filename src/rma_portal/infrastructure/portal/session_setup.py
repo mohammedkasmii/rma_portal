@@ -69,7 +69,7 @@ async def launch_visible_browser_and_wait(
     Browser close (teardown) is bounded independently of the employee's
     own wait for the window to close (which is deliberately unbounded --
     see ``_wait_until_closed``): the same reasoning as
-    ``SyncAgreementQueue.verify_session`` applies here -- a stalled
+    ``SyncWorkflows.verify_session`` applies here -- a stalled
     ``AsyncCamoufox`` close must not leave CONNECTING stuck forever.
 
     A caller must keep the profile lock it holds unreleased whenever

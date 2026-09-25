@@ -7,9 +7,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from rma_portal.infrastructure.db.repositories import (
     SqlAlchemyDossierNoteRepository,
     SqlAlchemyDossierRepository,
-    SqlAlchemyDossierWorkRepository,
     SqlAlchemyNotificationRepository,
-    SqlAlchemyPollRunRepository,
     SqlAlchemyPortalAccountRepository,
     SqlAlchemyUserRepository,
     SqlAlchemyWorkflowMembershipRepository,
@@ -43,9 +41,7 @@ class SqlAlchemyUnitOfWork:
         self.ai_runs = SqlAlchemyAiRunRepository(session)
         self.dossiers = SqlAlchemyDossierRepository(session)
         self.notifications = SqlAlchemyNotificationRepository(session)
-        self.poll_runs = SqlAlchemyPollRunRepository(session)
         self.users = SqlAlchemyUserRepository(session)
-        self.dossier_work = SqlAlchemyDossierWorkRepository(session)
         self.dossier_notes = SqlAlchemyDossierNoteRepository(session)
 
     def commit(self) -> None:

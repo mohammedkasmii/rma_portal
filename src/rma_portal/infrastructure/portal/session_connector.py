@@ -22,15 +22,15 @@ dashboard can tell them apart instead of one long opaque "CONNECTING":
    stays unavailable until the application restarts rather than risking a
    fresh launch racing a browser that might still be running.
 2. **verifying** (``is_verifying``) -- a short, bounded, read-only check
-   (``verify_session``, in practice ``SyncAgreementQueue.verify_session``)
+   (``verify_session``, in practice ``SyncWorkflows.verify_session``)
    that the saved profile is still authenticated. A successful check marks
    the account READY immediately, without waiting for the full dossier
    baseline/enrichment -- that runs next, as its own phase.
 3. The normal synchronization (``run_sync``, in practice
-   ``SyncAgreementQueue.execute``) runs as a fire-and-forget task after a
+   ``SyncWorkflows.execute``) runs as a fire-and-forget task after a
    successful check. It is *not* part of ``is_active``/``is_verifying``, so
    it never keeps the dashboard on a stuck "CONNECTING"/"VERIFYING"; its own
-   progress is ``SyncAgreementQueue.is_running``.
+   progress is ``SyncWorkflows.is_running``.
 """
 
 from __future__ import annotations
@@ -112,7 +112,7 @@ class SessionConnector:
         ``is_sync_running()`` reports a synchronization currently holds the
         profile lock -- the scheduler, a manual refresh, or the sync this
         same connector triggers after a successful login all go through
-        the one shared ``SyncAgreementQueue.execute()``, so this one check
+        the one shared ``SyncWorkflows.execute()``, so this one check
         covers all three. ``_run_login`` would fail on
         ``BrowserProfileLockedError`` moments later anyway (the lock is
         acquired inside it, not here), but checking first means
@@ -159,7 +159,7 @@ class SessionConnector:
         # login, verification and the sync it triggers all inherit it
         # (asyncio.create_task copies the current contextvars context),
         # except the sync itself, which always mints its own fresh
-        # "sync-*" ID (see SyncAgreementQueue.execute) since it is its own
+        # "sync-*" ID (see SyncWorkflows.execute) since it is its own
         # tracked operation with its own poll_runs row.
         with operation_context(new_operation_id("conn")):
             started = time.perf_counter()

@@ -2,7 +2,7 @@
 
 Adding a future direct-API reader, or a second RMA queue, means writing a
 new ``PortalReader``/``PortalReaderFactory`` pair and registering it in
-``bootstrap`` -- nothing in ``SyncAgreementQueue`` or the web layer changes.
+``bootstrap`` -- nothing in ``SyncWorkflows`` or the web layer changes.
 """
 
 from __future__ import annotations
@@ -14,11 +14,8 @@ from typing import Protocol
 
 from rma_portal.application.dto import (
     DashboardRow,
-    DossierDetails,
     DossierDetailValues,
     PortalDossierRef,
-    QueueRow,
-    QueueSnapshot,
     WorkflowReadOutcome,
 )
 from rma_portal.domain.enums import (
@@ -35,11 +32,10 @@ from rma_portal.domain.enums import (
 from rma_portal.domain.models import (
     AiRun,
     Dossier,
+    DossierDates,
     DossierNote,
-    DossierWork,
     Notification,
     OutboxMessage,
-    PollRun,
     PortalAccount,
     SyncRun,
     User,
@@ -75,10 +71,6 @@ class PortalReader(Protocol):
         """Read the shared detail page once per record per session (cached).
         Raises ``DetailReadError`` (non-fatal) or ``PortalAuthRequiredError``."""
         ...
-
-    async def read_agreement_queue(self) -> QueueSnapshot: ...
-
-    async def read_dossier_details(self, dossier: PortalDossierRef) -> DossierDetails: ...
 
     async def verify_authenticated(self) -> None:
         """Raise ``PortalAuthRequiredError`` if the saved session is not
@@ -213,43 +205,45 @@ class WorkflowMembershipRepository(Protocol):
 
 
 class DossierRepository(Protocol):
-    def existing_state_by_account(
-        self, account_id: int
-    ) -> dict[str, ExistingDossierState]: ...
-
     def get_by_record_id(self, account_id: int, record_id: str) -> Dossier | None: ...
 
     def get(self, dossier_id: int) -> Dossier | None: ...
 
-    def create_from_row(self, account_id: int, row: QueueRow, now: datetime) -> Dossier: ...
+    def upsert_from_workflow_row(
+        self,
+        account_id: int,
+        record_id: str,
+        details_href: str,
+        common_values: Mapping[str, str],
+        now: datetime,
+    ) -> tuple[Dossier, bool, bool]:
+        """Create or refresh the shared dossier a queue row belongs to.
 
-    def touch(self, account_id: int, row: QueueRow, now: datetime) -> tuple[Dossier, bool]:
-        """Refresh an already-active dossier's list fields.
-
-        Returns the updated dossier and whether its portal_status changed
-        from what was stored, since a status change alone (without becoming
-        a "new" or "reactivated" dossier) still warrants a detail refetch.
+        Only the common columns the row's view renders are written. Returns
+        ``(dossier, created, portal_status_changed)``.
         """
         ...
 
-    def reactivate(self, account_id: int, row: QueueRow, now: datetime) -> Dossier: ...
+    def set_active(self, dossier_id: int, active: bool) -> None: ...
 
-    def apply_absence_increment(self, account_id: int, record_id: str, count: int) -> None: ...
+    def save_detail_values(
+        self,
+        dossier_id: int,
+        values: Mapping[str, str],
+        dates: DossierDates | None,
+        fetched_at: datetime,
+    ) -> None: ...
 
-    def deactivate(self, account_id: int, record_id: str) -> None: ...
+    def mark_detail_failed(self, dossier_id: int, error: str, attempted_at: datetime) -> None: ...
 
-    def save_details(self, dossier_id: int, details: DossierDetails) -> None: ...
-
-    def dossiers_needing_detail_retry(self, account_id: int) -> list[Dossier]: ...
-
-    def list_for_dashboard(self, *, user_id: int) -> list[DashboardRow]: ...
+    def list_for_dashboard(
+        self, *, user_id: int, workflow_key: str = "agreement_garage"
+    ) -> list[DashboardRow]:
+        """The pre-V2 (single-queue) dashboard: the active members of one workflow."""
+        ...
 
 
 class NotificationRepository(Protocol):
-    def create(
-        self, dossier_id: int, kind: NotificationKind, detected_at: datetime
-    ) -> Notification: ...
-
     def create_for_occurrence(
         self,
         *,
@@ -273,28 +267,6 @@ class NotificationRepository(Protocol):
 
     def mark_all_existing_as_read_for_user(self, user_id: int, seen_at: datetime) -> None: ...
 
-    def acknowledge_dossier(self, dossier_id: int, user_id: int, seen_at: datetime) -> None: ...
-
-    def unread_count_for_user(self, user_id: int) -> int: ...
-
-    def is_unread_for_user(self, dossier_id: int, user_id: int) -> bool: ...
-
-
-class PollRunRepository(Protocol):
-    def start(self, account_id: int, started_at: datetime) -> PollRun: ...
-
-    def finish(
-        self,
-        poll_run_id: int,
-        *,
-        status: PollStatus,
-        completed_at: datetime,
-        rows_seen: int,
-        pages_seen: int,
-        details_failed: int,
-        error: str | None,
-    ) -> PollRun: ...
-
 
 class UserRepository(Protocol):
     def get_by_username(self, username: str) -> User | None: ...
@@ -310,21 +282,15 @@ class UserRepository(Protocol):
     def set_password_hash(self, user_id: int, password_hash: str) -> None: ...
 
 
-class DossierWorkRepository(Protocol):
-    def get(self, dossier_id: int) -> DossierWork | None: ...
-
-    def upsert(
+class DossierNoteRepository(Protocol):
+    def add(
         self,
         dossier_id: int,
-        status: WorkStatus,
-        expected_version: int | None,
-        updated_by: int,
-        updated_at: datetime,
-    ) -> DossierWork: ...
-
-
-class DossierNoteRepository(Protocol):
-    def add(self, dossier_id: int, author_id: int, body: str, created_at: datetime) -> DossierNote: ...
+        author_id: int,
+        body: str,
+        created_at: datetime,
+        workflow_membership_id: int | None = None,
+    ) -> DossierNote: ...
 
     def list_for_dossier(self, dossier_id: int) -> list[DossierNote]: ...
 
@@ -483,6 +449,17 @@ class AiRunRepository(Protocol):
     def recent(self, limit: int = 20) -> list[AiRun]: ...
 
 
+class CycleLock(Protocol):
+    """Guarantees that only one synchronization cycle runs across every process.
+
+    ``try_acquire`` yields ``True`` when this caller now owns the cycle and
+    ``False`` when another process already does; the lock is released when
+    the context exits (or the holder's database session dies).
+    """
+
+    def try_acquire(self) -> AbstractContextManager[bool]: ...
+
+
 class UnitOfWork(Protocol):
     """One SQLite transaction boundary spanning every repository below."""
 
@@ -498,9 +475,7 @@ class UnitOfWork(Protocol):
     ai_runs: AiRunRepository
     dossiers: DossierRepository
     notifications: NotificationRepository
-    poll_runs: PollRunRepository
     users: UserRepository
-    dossier_work: DossierWorkRepository
     dossier_notes: DossierNoteRepository
 
     def commit(self) -> None: ...

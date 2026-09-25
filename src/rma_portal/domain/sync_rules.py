@@ -1,6 +1,6 @@
 """Pure OmegaFlow reconciliation policy.
 
-This module contains no I/O. ``application.sync_service.SyncAgreementQueue``
+This module contains no I/O. ``application.workflow_sync.SyncWorkflows``
 reads the portal and the repositories, then calls :func:`reconcile` to decide
 what must change, and finally persists the result. Keeping the policy pure
 makes every rule in the specification independently testable without a

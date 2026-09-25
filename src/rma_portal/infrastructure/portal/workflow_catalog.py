@@ -13,6 +13,8 @@ column classes and the shared-detail date fields. Nothing here is a guess:
 * empty captured queues (Appréciation, Hifad-filtered agreement, EXPC 2ème
   expert, Réserves en cours) are registered normally: their DOM and response
   contract is known, they simply produced zero rows;
+* the Expertise collégiale stages declare ``follows`` (the path documented in
+  docs/multi-workflow-system-design.md); no other pipeline is assumed;
 * every workflow except ``agreement_garage`` is ``CAPTURE_DERIVED``: it runs
   with the conservative queue-membership policy and is shown as "À valider
   sur site" until the agency confirms it.
@@ -27,6 +29,7 @@ from collections.abc import Iterable
 
 from rma_portal.domain.enums import NotificationClass, WorkflowRulesStatus
 from rma_portal.domain.workflow_definition import (
+    COMMON_FIELD_KEYS,
     FieldKind,
     FieldSource,
     FieldSpec,
@@ -35,22 +38,7 @@ from rma_portal.domain.workflow_definition import (
 )
 
 CATALOG_VERSION = 1
-
-# Dossier columns that are shared across queues (the common identity fields).
-COMMON_FIELD_KEYS = frozenset(
-    {
-        "dossier_number",
-        "insured_name",
-        "procedure",
-        "registration",
-        "garage",
-        "portal_status",
-        "city",
-        "estimate_amount_raw",
-        "observation_count",
-        "agreement_login",
-    }
-)
+__all__ = ["CATALOG", "COMMON_FIELD_KEYS", "SHARED_DETAIL_FIELDS", "StaticWorkflowCatalog", "default_catalog"]
 
 _AGREEMENT_CONTROL = "#kn-conn-1-field_219"
 
@@ -436,6 +424,7 @@ CATALOG: tuple[WorkflowDefinition, ...] = (
         notification_class=_ACTION,
         rules_status=_DERIVED,
         sort_order=130,
+        follows=("collegial_first_expert",),
         fields=(
             NUMBER,
             NAME,
@@ -466,6 +455,7 @@ CATALOG: tuple[WorkflowDefinition, ...] = (
         notification_class=_ACTION,
         rules_status=_DERIVED,
         sort_order=140,
+        follows=("collegial_first_agreed",),
         fields=(
             NUMBER,
             REGISTRATION,
@@ -493,6 +483,7 @@ CATALOG: tuple[WorkflowDefinition, ...] = (
         notification_class=_INFO,
         rules_status=_DERIVED,
         sort_order=150,
+        follows=("collegial_second_agreed",),
         fields=(
             NUMBER,
             PROCEDURE,

@@ -48,7 +48,7 @@ class Settings:
     max_note_length: int = 2000
     omegaflow_base_url: str = "https://omegaflow.ma"
     omegaflow_start_route: str = "https://omegaflow.ma/#dossiers-en-instance-accord/"
-    omegaflow_procedure_value: str = "5ed644a2faf17c0015d8c367"
+    max_detail_reads_per_cycle: int = 60
     portal_timezone: str = "Africa/Casablanca"
     portal_locale: str = "fr-FR"
     headless_browser: bool = True
@@ -120,6 +120,7 @@ def load_settings() -> Settings:
         host=os.environ.get("RMA_PORTAL_HOST", "0.0.0.0"),
         port=_env_int("RMA_PORTAL_PORT", 8765),
         poll_interval_seconds=_env_int("RMA_PORTAL_POLL_INTERVAL_SECONDS", 300),
+        max_detail_reads_per_cycle=_env_int("RMA_PORTAL_MAX_DETAIL_READS_PER_CYCLE", 60),
         session_lifetime_hours=_env_int("RMA_PORTAL_SESSION_LIFETIME_HOURS", 12),
         session_verify_timeout_seconds=_env_int("RMA_PORTAL_SESSION_VERIFY_TIMEOUT_SECONDS", 45),
         headless_browser=_env_bool("RMA_PORTAL_HEADLESS_BROWSER", True),

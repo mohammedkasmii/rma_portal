@@ -14,6 +14,23 @@ from dataclasses import dataclass, field
 
 from rma_portal.domain.enums import NotificationClass, WorkflowRulesStatus
 
+COMMON_FIELD_KEYS = frozenset(
+    {
+        "dossier_number",
+        "insured_name",
+        "procedure",
+        "registration",
+        "garage",
+        "portal_status",
+        "city",
+        "estimate_amount_raw",
+        "observation_count",
+        "agreement_login",
+    }
+)
+"""Field keys that map to shared ``Dossier`` columns: every queue that renders one of them
+refreshes the same dossier identity, so a dossier is stored once however many queues list it."""
+
 
 class FieldSource(enum.StrEnum):
     LIST = "LIST"
@@ -114,6 +131,11 @@ class WorkflowDefinition:
     detail_refresh_seconds: int = 3600
     scene_id: str | None = None
     """Captured Knack scene id (documentation and API-contract evidence)."""
+
+    follows: tuple[str, ...] = ()
+    """Keys of the upstream workflows this queue is the documented next stage of. A dossier
+    that appears here adds a transition event to its upstream membership; it never
+    closes the upstream work, which employees keep control of."""
 
     filter: FilterSpec | None = None
     catalog_version: int = 1

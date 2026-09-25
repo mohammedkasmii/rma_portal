@@ -12,7 +12,6 @@ from datetime import datetime
 
 from sqlalchemy import (
     CheckConstraint,
-    DateTime,
     Enum,
     ForeignKey,
     Index,
@@ -38,7 +37,7 @@ from rma_portal.domain.enums import (
     WorkflowRulesStatus,
     WorkStatus,
 )
-from rma_portal.infrastructure.db.base import Base
+from rma_portal.infrastructure.db.base import Base, UtcDateTime
 
 
 def _enum_column(enum_cls: type[enum.Enum], length: int) -> Enum:
@@ -62,7 +61,7 @@ class UserRow(Base):
     password_hash: Mapped[str] = mapped_column(String(300), nullable=False)
     role: Mapped[Role] = mapped_column(_enum_column(Role, 20), nullable=False, default=Role.EMPLOYEE)
     active: Mapped[bool] = mapped_column(default=True, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime(), nullable=False)
 
 
 class PortalAccountRow(Base):
@@ -72,12 +71,12 @@ class PortalAccountRow(Base):
     name: Mapped[str] = mapped_column(String(150), nullable=False)
     base_url: Mapped[str] = mapped_column(String(500), nullable=False)
     enabled: Mapped[bool] = mapped_column(default=True, nullable=False)
-    baseline_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    baseline_completed_at: Mapped[datetime | None] = mapped_column(UtcDateTime())
     session_status: Mapped[SessionStatus] = mapped_column(
         _enum_column(SessionStatus, 20), nullable=False, default=SessionStatus.UNKNOWN
     )
-    last_poll_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_poll_at: Mapped[datetime | None] = mapped_column(UtcDateTime())
+    last_success_at: Mapped[datetime | None] = mapped_column(UtcDateTime())
     last_error: Mapped[str | None] = mapped_column(String(1000))
 
 
@@ -106,9 +105,9 @@ class WorkflowRow(Base):
         nullable=False,
         default=WorkflowRulesStatus.UNCONFIRMED,
     )
-    baseline_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    last_poll_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    baseline_completed_at: Mapped[datetime | None] = mapped_column(UtcDateTime())
+    last_poll_at: Mapped[datetime | None] = mapped_column(UtcDateTime())
+    last_success_at: Mapped[datetime | None] = mapped_column(UtcDateTime())
     last_error: Mapped[str | None] = mapped_column(String(1000))
     notification_class: Mapped[NotificationClass] = mapped_column(
         _enum_column(NotificationClass, 20), nullable=False, default=NotificationClass.ACTION
@@ -151,24 +150,24 @@ class DossierRow(Base):
     agreement_login: Mapped[str] = mapped_column(String(200), default="")
     details_href: Mapped[str] = mapped_column(String(1000), default="")
 
-    date_creation: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    date_creation: Mapped[datetime | None] = mapped_column(UtcDateTime())
     date_creation_raw: Mapped[str] = mapped_column(String(100), default="")
-    date_premiere_fin_prevue: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    date_premiere_fin_prevue: Mapped[datetime | None] = mapped_column(UtcDateTime())
     date_premiere_fin_prevue_raw: Mapped[str] = mapped_column(String(100), default="")
-    date_fin_travaux_prevue: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    date_fin_travaux_prevue: Mapped[datetime | None] = mapped_column(UtcDateTime())
     date_fin_travaux_prevue_raw: Mapped[str] = mapped_column(String(100), default="")
-    date_envoi_devis_garage: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    date_envoi_devis_garage: Mapped[datetime | None] = mapped_column(UtcDateTime())
     date_envoi_devis_garage_raw: Mapped[str] = mapped_column(String(100), default="")
-    date_photos_avant: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    date_photos_avant: Mapped[datetime | None] = mapped_column(UtcDateTime())
     date_photos_avant_raw: Mapped[str] = mapped_column(String(100), default="")
 
     detail_complete: Mapped[bool] = mapped_column(default=False, nullable=False)
     detail_error: Mapped[str | None] = mapped_column(String(1000))
     detail_fields_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
-    detail_fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    detail_fetched_at: Mapped[datetime | None] = mapped_column(UtcDateTime())
 
-    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    first_seen_at: Mapped[datetime] = mapped_column(UtcDateTime(), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(UtcDateTime(), nullable=False)
     active: Mapped[bool] = mapped_column(default=True, nullable=False)
     missing_complete_polls: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
@@ -202,14 +201,14 @@ class WorkflowMembershipRow(Base):
     dossier_id: Mapped[int] = mapped_column(
         ForeignKey("dossiers.id", ondelete="CASCADE"), nullable=False
     )
-    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    first_seen_at: Mapped[datetime] = mapped_column(UtcDateTime(), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(UtcDateTime(), nullable=False)
     active: Mapped[bool] = mapped_column(default=True, nullable=False)
     missing_complete_polls: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     occurrence_number: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     captured_fields_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
     fingerprint: Mapped[str] = mapped_column(String(64), default="", nullable=False)
-    last_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_changed_at: Mapped[datetime | None] = mapped_column(UtcDateTime())
 
     workflow: Mapped[WorkflowRow] = relationship(back_populates="memberships")
     dossier: Mapped[DossierRow] = relationship(back_populates="workflow_memberships")
@@ -248,7 +247,7 @@ class WorkflowOccurrenceRow(Base):
     )
     occurrence_number: Mapped[int] = mapped_column(Integer, nullable=False)
     origin: Mapped[OccurrenceOrigin] = mapped_column(_enum_column(OccurrenceOrigin, 20), nullable=False)
-    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    detected_at: Mapped[datetime] = mapped_column(UtcDateTime(), nullable=False)
 
     membership: Mapped[WorkflowMembershipRow] = relationship(back_populates="occurrences")
 
@@ -266,7 +265,7 @@ class WorkflowWorkRow(Base):
     )
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UtcDateTime(), nullable=False)
 
     membership: Mapped[WorkflowMembershipRow] = relationship(back_populates="work")
 
@@ -281,7 +280,7 @@ class NotificationRow(Base):
     kind: Mapped[NotificationKind] = mapped_column(
         _enum_column(NotificationKind, 50), nullable=False, default=NotificationKind.NEW_AGREEMENT_DOSSIER
     )
-    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    detected_at: Mapped[datetime] = mapped_column(UtcDateTime(), nullable=False)
     workflow_id: Mapped[int | None] = mapped_column(
         ForeignKey("workflows.id", ondelete="CASCADE"), index=True
     )
@@ -307,7 +306,7 @@ class NotificationReadRow(Base):
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
     )
-    seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    seen_at: Mapped[datetime] = mapped_column(UtcDateTime(), nullable=False)
 
     notification: Mapped[NotificationRow] = relationship(back_populates="reads")
 
@@ -321,7 +320,7 @@ class DossierWorkRow(Base):
     status: Mapped[WorkStatus] = mapped_column(_enum_column(WorkStatus, 20), nullable=False, default=WorkStatus.TO_DO)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UtcDateTime(), nullable=False)
 
     dossier: Mapped[DossierRow] = relationship(back_populates="work")
 
@@ -338,7 +337,7 @@ class DossierNoteRow(Base):
     )
     author_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     body: Mapped[str] = mapped_column(String(MAX_NOTE_LENGTH), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime(), nullable=False)
     workflow_membership_id: Mapped[int | None] = mapped_column(
         ForeignKey("workflow_memberships.id", ondelete="SET NULL")
     )
@@ -353,8 +352,8 @@ class PollRunRow(Base):
     portal_account_id: Mapped[int] = mapped_column(
         ForeignKey("portal_accounts.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[datetime] = mapped_column(UtcDateTime(), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(UtcDateTime())
     status: Mapped[PollStatus] = mapped_column(_enum_column(PollStatus, 20), nullable=False)
     rows_seen: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     pages_seen: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -374,8 +373,8 @@ class SyncRunRow(Base):
     trigger: Mapped[SyncTrigger] = mapped_column(
         _enum_column(SyncTrigger, 20), nullable=False, default=SyncTrigger.SCHEDULED
     )
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[datetime] = mapped_column(UtcDateTime(), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(UtcDateTime())
     status: Mapped[PollStatus] = mapped_column(_enum_column(PollStatus, 20), nullable=False)
     workflows_total: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     workflows_complete: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -402,8 +401,8 @@ class WorkflowPollRunRow(Base):
     workflow_id: Mapped[int] = mapped_column(
         ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False
     )
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[datetime] = mapped_column(UtcDateTime(), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(UtcDateTime())
     status: Mapped[PollStatus] = mapped_column(_enum_column(PollStatus, 20), nullable=False)
     baseline: Mapped[bool] = mapped_column(default=False, nullable=False)
     rows_seen: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -444,7 +443,7 @@ class WorkflowEventRow(Base):
     notification_class: Mapped[NotificationClass] = mapped_column(
         _enum_column(NotificationClass, 20), nullable=False
     )
-    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    detected_at: Mapped[datetime] = mapped_column(UtcDateTime(), nullable=False)
     changed_fields_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
     before_fingerprints_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
     after_fingerprints_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
@@ -460,9 +459,9 @@ class OutboxMessageRow(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     topic: Mapped[str] = mapped_column(String(60), nullable=False)
     payload_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime(), nullable=False)
+    available_at: Mapped[datetime] = mapped_column(UtcDateTime(), nullable=False)
+    processed_at: Mapped[datetime | None] = mapped_column(UtcDateTime())
     attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     last_error: Mapped[str | None] = mapped_column(String(1000))
 
@@ -481,7 +480,7 @@ class AiRunRow(Base):
     prompt_version: Mapped[str] = mapped_column(String(30), nullable=False)
     context_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[AiRunStatus] = mapped_column(_enum_column(AiRunStatus, 20), nullable=False)
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(UtcDateTime(), nullable=False)
     duration_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     result_json: Mapped[str | None] = mapped_column(Text)
     error: Mapped[str | None] = mapped_column(String(500))

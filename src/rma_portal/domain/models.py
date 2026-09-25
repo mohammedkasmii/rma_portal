@@ -218,19 +218,6 @@ class DossierNote:
 
 
 @dataclass(slots=True)
-class PollRun:
-    id: int | None
-    portal_account_id: int
-    started_at: datetime
-    completed_at: datetime | None
-    status: PollStatus
-    rows_seen: int
-    pages_seen: int
-    details_failed: int
-    error: str | None = field(default=None)
-
-
-@dataclass(slots=True)
 class SyncRun:
     """Parent record of one complete synchronization cycle."""
 

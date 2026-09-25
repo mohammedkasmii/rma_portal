@@ -6,13 +6,13 @@ import asyncio
 import contextlib
 import logging
 
-from rma_portal.application.sync_service import SyncAgreementQueue
+from rma_portal.application.workflow_sync import SyncWorkflows
 
 logger = logging.getLogger(__name__)
 
 
 class PollScheduler:
-    def __init__(self, sync_service: SyncAgreementQueue, interval_seconds: int) -> None:
+    def __init__(self, sync_service: SyncWorkflows, interval_seconds: int) -> None:
         self._sync_service = sync_service
         self._interval_seconds = interval_seconds
         self._task: asyncio.Task | None = None
@@ -37,12 +37,13 @@ class PollScheduler:
                 else:
                     logger.info(
                         "poll finished: status=%s rows=%d created=%d reactivated=%d "
-                        "deactivated=%d notified=%d details_failed=%d",
+                        "deactivated=%d changed=%d notified=%d details_failed=%d",
                         result.status,
                         result.rows_seen,
                         result.created,
                         result.reactivated,
                         result.deactivated,
+                        result.changed,
                         result.notifications_created,
                         result.details_failed,
                     )

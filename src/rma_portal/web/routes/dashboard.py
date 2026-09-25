@@ -83,8 +83,8 @@ async def manual_refresh(
     user: User = Depends(require_user),
     _: None = Depends(check_same_origin),
 ):
-    # SyncAgreementQueue already turns portal/browser failures into a normal
-    # FAILED SyncResult (see application.sync_service); this guards against
+    # SyncWorkflows already turns portal/browser failures into a normal
+    # FAILED SyncResult (see application.workflow_sync); this guards against
     # any other unexpected error so a manual refresh always re-renders the
     # dashboard (with its error banner) instead of surfacing an HTTP 500.
     try:

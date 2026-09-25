@@ -68,14 +68,12 @@ def test_admin_cannot_disable_own_active_account(client, admin_user):
 
 
 def _seed_dossier(uow_factory, portal_account_id, record_id: str, **overrides):
-    from tests.unit.application.test_sync_service import _row
+    from tests.support import seed_member
 
-    with uow_factory() as uow:
-        dossier = uow.dossiers.create_from_row(
-            portal_account_id, _row(record_id, **overrides), datetime.now(UTC)
-        )
-        uow.commit()
-        return dossier.id
+    dossier_id, _ = seed_member(
+        uow_factory, portal_account_id, "agreement_garage", record_id, **overrides
+    )
+    return dossier_id
 
 
 def test_dashboard_requires_login_redirects(client):
@@ -107,7 +105,15 @@ def test_acknowledgement_is_per_employee(client, uow_factory, portal_account_id,
     with uow_factory() as uow:
         from rma_portal.domain.enums import NotificationKind
 
-        uow.notifications.create(dossier_id, NotificationKind.NEW_AGREEMENT_DOSSIER, datetime.now(UTC))
+        membership = uow.workflow_memberships.list_for_dossier(dossier_id)[0]
+        occurrence = uow.workflow_occurrences.latest_for_membership(membership.id)
+        uow.notifications.create_for_occurrence(
+            dossier_id=dossier_id,
+            workflow_id=occurrence.workflow_id,
+            occurrence_id=occurrence.id,
+            kind=NotificationKind.WORKFLOW_ITEM_NEW,
+            detected_at=datetime.now(UTC),
+        )
         uow.commit()
 
     login(client, "alice", "AlicePassword1")
@@ -115,8 +121,8 @@ def test_acknowledgement_is_per_employee(client, uow_factory, portal_account_id,
     assert response.status_code == 200
 
     with uow_factory() as uow:
-        assert uow.notifications.is_unread_for_user(dossier_id, alice.id) is False
-        assert uow.notifications.is_unread_for_user(dossier_id, bob.id) is True
+        assert uow.notifications.is_occurrence_unread_for_user(occurrence.id, alice.id) is False
+        assert uow.notifications.is_occurrence_unread_for_user(occurrence.id, bob.id) is True
 
 
 def test_update_work_status_and_add_note(client, employee_user, uow_factory, portal_account_id):

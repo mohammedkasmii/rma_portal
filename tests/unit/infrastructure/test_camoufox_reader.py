@@ -38,7 +38,6 @@ def _make_reader(
         lock_path=lock_path,
         start_route=START_ROUTE,
         base_url="https://omegaflow.ma/",
-        procedure_value=PROCEDURE_VALUE,
         timezone_id="Africa/Casablanca",
         session_state_path=session_state_path,
         locale="fr-FR",
@@ -61,22 +60,13 @@ def test_start_route_has_no_slash_after_hash():
 
 
 @pytest.mark.asyncio
-async def test_navigates_to_the_exact_no_slash_start_route():
-    reader = _make_reader()
-    reader._page = _base_page(ZERO_ROW_HTML)
-
-    await reader.read_agreement_queue()
-
-    assert reader._page.goto_calls == [START_ROUTE]
-
-
-@pytest.mark.asyncio
 async def test_selects_hidden_chosen_procedure_with_force_and_verifies_native_value():
     reader = _make_reader()
     page = _base_page(ZERO_ROW_HTML)
-    reader._page = page
 
-    await reader.read_agreement_queue()
+    await reader._apply_filter(
+        page, "#view_1874", "#kn-conn-1-field_219", PROCEDURE_VALUE, "Garage agréé"
+    )
 
     assert len(page.select_option_calls) == 1
     call = page.select_option_calls[0]
@@ -92,36 +82,25 @@ async def test_selects_hidden_chosen_procedure_with_force_and_verifies_native_va
 
 
 @pytest.mark.asyncio
-async def test_procedure_value_mismatch_after_select_raises_portal_read_error():
+async def test_filter_value_mismatch_after_select_raises_portal_read_error():
     reader = _make_reader()
     page = _base_page(ZERO_ROW_HTML)
-    # Simulate select_option appearing to run but the native value never
-    # actually changing (e.g. Chosen intercepting the interaction).
+    # select_option appears to run but the native value never actually changes
+    # (e.g. Chosen intercepting the interaction).
     page.select_option_effect = lambda locator, value: None
-    reader._page = page
 
     with pytest.raises(PortalReadError):
-        await reader.read_agreement_queue()
+        await reader._apply_filter(
+            page, "#view_1874", "#kn-conn-1-field_219", PROCEDURE_VALUE, "Garage agréé"
+        )
 
 
 @pytest.mark.asyncio
-async def test_successful_filtered_queue_with_zero_rows_is_a_complete_snapshot():
-    reader = _make_reader()
-    reader._page = _base_page(ZERO_ROW_HTML)
-
-    snapshot = await reader.read_agreement_queue()
-
-    assert snapshot.rows == ()
-    assert snapshot.pages_seen == 1
-
-
-@pytest.mark.asyncio
-async def test_read_agreement_queue_never_waits_for_a_row_to_exist():
+async def test_search_never_waits_for_a_row_to_exist():
     reader = _make_reader()
     page = _base_page(ZERO_ROW_HTML)
-    reader._page = page
 
-    await reader.read_agreement_queue()
+    await reader._submit_search(page, "#view_1874")
 
     assert not any(
         "table tbody tr" in selector for selector, _state, _timeout in page.wait_for_calls

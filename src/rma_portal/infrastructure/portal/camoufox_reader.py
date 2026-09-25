@@ -24,25 +24,16 @@ from filelock import FileLock
 from rma_portal.application.dto import (
     BrowserProfileLockedError,
     DetailReadError,
-    DossierDetails,
     DossierDetailValues,
     PortalAuthRequiredError,
     PortalDossierRef,
-    PortalPartialReadError,
     PortalReadError,
-    QueueSnapshot,
     WorkflowReadOutcome,
     WorkflowSnapshot,
 )
 from rma_portal.domain.enums import PollStatus
 from rma_portal.domain.workflow_definition import FieldSpec, WorkflowDefinition
-from rma_portal.infrastructure.portal.parser import (
-    detect_auth_required,
-    merge_snapshots,
-    parse_dossier_details,
-    parse_page_count,
-    parse_queue_page,
-)
+from rma_portal.infrastructure.portal.parser import detect_auth_required
 from rma_portal.infrastructure.portal.profile_lock import (
     acquire_profile_lock,
     mark_profile_teardown_unconfirmed,
@@ -173,7 +164,6 @@ class CamoufoxPortalReaderFactory:
         lock_path: Path,
         start_route: str,
         base_url: str,
-        procedure_value: str,
         timezone_id: str,
         session_state_path: Path,
         locale: str = "fr-FR",
@@ -183,7 +173,6 @@ class CamoufoxPortalReaderFactory:
         self._lock_path = lock_path
         self._start_route = start_route
         self._base_url = base_url
-        self._procedure_value = procedure_value
         self._timezone_id = timezone_id
         self._session_state_path = session_state_path
         self._locale = locale
@@ -195,7 +184,6 @@ class CamoufoxPortalReaderFactory:
             lock_path=self._lock_path,
             start_route=self._start_route,
             base_url=self._base_url,
-            procedure_value=self._procedure_value,
             timezone_id=self._timezone_id,
             session_state_path=self._session_state_path,
             locale=self._locale,
@@ -214,7 +202,6 @@ class CamoufoxPortalReader:
         lock_path: Path,
         start_route: str,
         base_url: str,
-        procedure_value: str,
         timezone_id: str,
         session_state_path: Path,
         locale: str,
@@ -224,7 +211,6 @@ class CamoufoxPortalReader:
         self._lock_path = lock_path
         self._start_route = start_route
         self._base_url = base_url
-        self._procedure_value = procedure_value
         self._timezone_id = timezone_id
         self._session_state_path = session_state_path
         self._locale = locale
@@ -378,11 +364,6 @@ class CamoufoxPortalReader:
 
         await self._submit_search(page, root)
 
-    async def _apply_garage_agree_filter(self, page: Any) -> None:
-        await self._apply_filter(
-            page, _LEGACY_ROOT, "#kn-conn-1-field_219", self._procedure_value, "Garage agréé"
-        )
-
     async def _submit_search(self, page: Any, root: str = _LEGACY_ROOT) -> None:
         """Clicks the view's search form submit button -- captured selector:
         ``#view_N form.kn-search_form button[type="submit"]`` -- and waits for the
@@ -477,29 +458,6 @@ class CamoufoxPortalReader:
                 return
             previous = current
 
-    async def _verify_last_page_reached(
-        self, page: Any, total_pages: int, root: str = _LEGACY_ROOT
-    ) -> None:
-        """Cross-checks the captured 'Next' control evidence against
-        ``total_pages`` after the last page has been visited --
-        ``.kn-change-page.kn-next`` only gains its additional ``disabled``
-        class once there truly is no next page. Guards against silently
-        under-reporting the queue if the page count read from page 1 ever
-        lagged the real data (e.g. a dossier appeared between that read
-        and this check). A missing control (no pagination widget at all)
-        is not an error -- a genuinely single-page result may not render
-        one.
-        """
-        next_control = page.locator(f"{root} {_NEXT_PAGE}").first
-        if await next_control.count() == 0:
-            return
-        classes = (await next_control.get_attribute("class")) or ""
-        if "disabled" not in classes.split():
-            raise RuntimeError(
-                f"La file OmegaFlow semble contenir plus de {total_pages} page(s) que prévu "
-                "(le bouton 'suivant' n'est pas désactivé après la dernière page lue)."
-            )
-
     async def _wait_for_queue_view(
         self, page: Any, root: str = _LEGACY_ROOT, *, require_table_header: bool = False
     ) -> None:
@@ -535,77 +493,6 @@ class CamoufoxPortalReader:
                 )
             await page.wait_for_timeout(_QUEUE_VIEW_POLL_INTERVAL_MS)
 
-    async def read_agreement_queue(self) -> QueueSnapshot:
-        page = self._require_page()
-        pages_collected: list[QueueSnapshot] = []
-        try:
-            with log_stage(logger, "queue_navigation"):
-                await page.goto(self._start_route, wait_until="domcontentloaded", timeout=60_000)
-                await self._wait_for_queue_view(page)
-            await self._apply_garage_agree_filter(page)
-
-            html = await page.content()
-            await self._assert_authenticated()
-            first_page = parse_queue_page(html)
-            pages_collected.append(first_page)
-            # Read from the same fully-settled HTML the rows themselves
-            # came from -- _apply_garage_agree_filter's own completion
-            # wait (the search button's "is-loading" class clearing) is
-            # the evidence this is the fully rendered filtered result,
-            # not a partial/loading render.
-            total_pages = parse_page_count(html)
-            logger.info(
-                "stage=pagination outcome=PAGE_COLLECTED page=1 total_pages=%d rows=%d",
-                total_pages,
-                len(first_page.rows),
-            )
-
-            for page_number in range(2, total_pages + 1):
-                with log_stage(logger, "pagination_page", page=page_number, total=total_pages):
-                    await self._go_to_page(page, page_number, _LEGACY_ROOT)
-                    html = await page.content()
-                    await self._assert_authenticated()
-                    page_snapshot = parse_queue_page(html)
-                    # Belt-and-suspenders on top of _go_to_page's own
-                    # row-change wait: never accept a page whose rows
-                    # exactly match the one before it, even if the wait
-                    # condition technically passed (e.g. a race between
-                    # the two dropdowns re-rendering and the row table).
-                    previous_ids = {row.record_id for row in pages_collected[-1].rows}
-                    current_ids = {row.record_id for row in page_snapshot.rows}
-                    if current_ids and current_ids == previous_ids:
-                        raise _StalePageResultError(page_number)
-                    pages_collected.append(page_snapshot)
-                    logger.info(
-                        "stage=pagination outcome=PAGE_COLLECTED page=%d total_pages=%d rows=%d",
-                        page_number,
-                        total_pages,
-                        len(page_snapshot.rows),
-                    )
-
-            with log_stage(logger, "pagination_verify_last_page", total_pages=total_pages):
-                await self._verify_last_page_reached(page, total_pages)
-        except PortalAuthRequiredError:
-            raise
-        except PortalReadError:
-            # Already a well-typed, well-messaged domain error (e.g. the
-            # Garage agréé filter failing to apply) -- propagate as-is
-            # instead of losing its message inside a generic wrapper.
-            raise
-        except Exception as exc:
-            message = f"Lecture incomplète de la liste OmegaFlow ({type(exc).__name__})."
-            if not pages_collected:
-                raise PortalReadError(message) from exc
-            raise PortalPartialReadError(message, partial=merge_snapshots(pages_collected)) from exc
-
-        merged = merge_snapshots(pages_collected)
-        logger.info(
-            "stage=pagination outcome=OK total_pages=%d unique_rows=%d",
-            total_pages,
-            len(merged.rows),
-        )
-        return merged
-
     async def verify_authenticated(self) -> None:
         """Short, read-only check: navigate to the queue's start route and
         require *positive* evidence the authenticated app actually
@@ -621,7 +508,7 @@ class CamoufoxPortalReader:
         ``_assert_authenticated``/``detect_auth_required`` logic used
         everywhere else) until one becomes true; an unresolved loading
         shell therefore never resolves here and is left to the caller's
-        own bound (``SyncAgreementQueue.verify_session``) to turn into a
+        own bound (``SyncWorkflows.verify_session``) to turn into a
         timeout/ERROR, never a false READY.
         """
         page = self._require_page()
@@ -807,27 +694,6 @@ class CamoufoxPortalReader:
         result = DossierDetailValues(values=parse_detail_fields(html, fields))
         self._detail_cache[dossier.record_id] = result
         return result
-
-    async def read_dossier_details(self, dossier: PortalDossierRef) -> DossierDetails:
-        page = self._require_page()
-        target = urljoin(self._base_url, dossier.details_href)
-        try:
-            await page.goto(target, wait_until="domcontentloaded", timeout=60_000)
-            await self._assert_authenticated()
-            await page.locator(".field_114 .kn-detail-body").wait_for(timeout=30_000)
-            await self._settle(page)
-            html = await page.content()
-            await self._assert_authenticated()
-        except PortalAuthRequiredError:
-            raise
-        except Exception as exc:
-            raise DetailReadError(
-                f"Lecture du détail impossible pour {dossier.record_id} ({type(exc).__name__})."
-            ) from exc
-
-        dates = parse_dossier_details(html, self._timezone_id)
-        return DossierDetails(dates=dates, detail_complete=True, detail_error=None)
-
 
 __all__ = [
     "BrowserProfileLockedError",

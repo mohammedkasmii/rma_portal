@@ -54,23 +54,20 @@ def _workflow(account_id: int, key: str, **overrides) -> Workflow:
 
 
 def _make_dossier(uow, account_id: int, record_id: str) -> int:
-    from rma_portal.application.dto import QueueRow
-
-    row = QueueRow(
-        record_id=record_id,
-        dossier_number="D-1",
-        insured_name="Assuré Synthétique",
-        procedure="Garage agréé",
-        registration="1-A-1",
-        garage="Garage Test",
-        estimate_amount_raw="",
-        portal_status="En cours",
-        city="Casablanca",
-        observation_count="0",
-        agreement_login="",
-        details_href=f"#x/view-dossier-details/{record_id}/",
+    common = {
+        "dossier_number": "D-1",
+        "insured_name": "Assuré Synthétique",
+        "procedure": "Garage agréé",
+        "registration": "1-A-1",
+        "garage": "Garage Test",
+        "portal_status": "En cours",
+        "city": "Casablanca",
+    }
+    dossier, created, _ = uow.dossiers.upsert_from_workflow_row(
+        account_id, record_id, f"#x/view-dossier-details/{record_id}/", common, NOW
     )
-    return uow.dossiers.create_from_row(account_id, row, NOW).id
+    assert created
+    return dossier.id
 
 
 def _make_user(uow, username: str) -> int:
