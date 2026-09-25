@@ -11,9 +11,8 @@ must stay light: stdlib at import time, Camoufox imported lazily.
 from __future__ import annotations
 
 import os
+import subprocess
 import time
-import urllib.error
-import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from importlib import metadata
@@ -83,18 +82,40 @@ def classify_http_status(status: int) -> str:
 def probe_http(
     url: str,
     timeout_s: float,
-    opener: Callable[..., object] = urllib.request.urlopen,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> tuple[int | None, float, str]:
     """(status or None, elapsed_ms, error type or ""). Never raises."""
-    request = urllib.request.Request(url, method="GET", headers={"User-Agent": "rma-poc-doctor"})
     started = time.perf_counter()
     status: int | None = None
     error = ""
     try:
-        with opener(request, timeout=timeout_s) as response:  # type: ignore[operator]
-            status = response.status  # type: ignore[attr-defined]
-    except urllib.error.HTTPError as exc:
-        status = exc.code
+        result = runner(
+            [
+                "curl",
+                "--location",
+                "--silent",
+                "--show-error",
+                "--output",
+                "/dev/null",
+                "--connect-timeout",
+                str(timeout_s),
+                "--max-time",
+                str(timeout_s),
+                "--user-agent",
+                "rma-poc-doctor",
+                "--write-out",
+                "%{http_code}",
+                url,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout_s + 1,
+            check=False,
+        )
+        if result.returncode == 0 and result.stdout.strip().isdigit():
+            status = int(result.stdout.strip())
+        else:
+            error = f"curl_exit_{result.returncode}"
     except Exception as exc:  # noqa: BLE001 - DNS, refused, timeout, TLS ... by type only
         error = type(exc).__name__
     return status, (time.perf_counter() - started) * 1000, error
@@ -149,8 +170,13 @@ def collect_checks(
         checks.append(Check(f"{label} writable", dir_writable(directory), str(directory)))
 
     profile_present = profile_dir.is_dir() and any(profile_dir.iterdir())
-    checks.append(Check("browser profile present", profile_present, required=False))
-    checks.append(Check("saved session state present", state_path.is_file(), required=False))
+    checks.append(
+        Check("browser profile", profile_present, f"present={'yes' if profile_present else 'no'}", False)
+    )
+    state_present = state_path.is_file()
+    checks.append(
+        Check("saved session state", state_present, f"present={'yes' if state_present else 'no'}", False)
+    )
 
     host = urlsplit(base_url).netloc
     status, elapsed_ms, error = probe_http(base_url, timeout_s)
