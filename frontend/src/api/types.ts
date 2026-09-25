@@ -1,0 +1,26 @@
+import type { components } from "./schema";
+
+type S = components["schemas"];
+export type Dashboard = S["DashboardView"];
+export type WorkflowView = S["WorkflowView"];
+export type WorkflowDetail = S["WorkflowDetailView"];
+export type ItemView = S["ItemView"];
+export type ItemPage = S["ItemPage"];
+export type DossierView = S["DossierView"];
+export type MembershipView = S["MembershipView"];
+export type EventOut = S["EventOut"];
+export type NoteView = S["NoteView"];
+export type WorkState = S["WorkStateView"];
+export type SessionHealth = S["SessionHealthView"];
+export type SyncHealth = S["SyncHealthView"];
+export type SyncRun = S["SyncRunView"];
+export type User = S["UserOut"];
+export type AdminUser = S["AdminUserOut"];
+export type WorkStatus = S["WorkStatus"];
+export type NotificationClass = S["NotificationClass"];
+export type RulesStatus = S["WorkflowRulesStatus"];
+export type DossierHit = S["DossierHitView"];
+export type ColumnView = S["ColumnView"];
+export type PollRun = S["PollRunView"];
+export type AiOutcome = S["AdvisorOutcomeOut"];
+export type AiStatus = S["AdvisorStatusOut"];

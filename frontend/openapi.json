@@ -1,0 +1,3354 @@
+{
+  "components": {
+    "schemas": {
+      "AcknowledgeOut": {
+        "properties": {
+          "acknowledged": {
+            "title": "Acknowledged",
+            "type": "integer"
+          },
+          "occurrence_id": {
+            "title": "Occurrence Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "occurrence_id",
+          "acknowledged"
+        ],
+        "title": "AcknowledgeOut",
+        "type": "object"
+      },
+      "AdminUserOut": {
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "boolean"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          },
+          "username": {
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "username",
+          "display_name",
+          "role",
+          "active"
+        ],
+        "title": "AdminUserOut",
+        "type": "object"
+      },
+      "AdvisorOutcomeOut": {
+        "properties": {
+          "cached": {
+            "default": false,
+            "title": "Cached",
+            "type": "boolean"
+          },
+          "disclaimer": {
+            "title": "Disclaimer",
+            "type": "string"
+          },
+          "facts": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Facts",
+            "type": "array"
+          },
+          "feature": {
+            "$ref": "#/components/schemas/AiFeature"
+          },
+          "generated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generated At"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "feature",
+          "status",
+          "disclaimer"
+        ],
+        "title": "AdvisorOutcomeOut",
+        "type": "object"
+      },
+      "AdvisorStatusOut": {
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "healthy": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Healthy"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          }
+        },
+        "required": [
+          "enabled",
+          "model",
+          "healthy"
+        ],
+        "title": "AdvisorStatusOut",
+        "type": "object"
+      },
+      "AiFeature": {
+        "enum": [
+          "DAILY_SUMMARY",
+          "DOSSIER_SUMMARY",
+          "HIGHLIGHT_EXPLANATION",
+          "PRIORITY_SUGGESTION",
+          "ANOMALY_GROUPING"
+        ],
+        "title": "AiFeature",
+        "type": "string"
+      },
+      "ColumnView": {
+        "properties": {
+          "date": {
+            "title": "Date",
+            "type": "boolean"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "kind",
+          "date"
+        ],
+        "title": "ColumnView",
+        "type": "object"
+      },
+      "CountersView": {
+        "properties": {
+          "actionable_new": {
+            "title": "Actionable New",
+            "type": "integer"
+          },
+          "active_total": {
+            "title": "Active Total",
+            "type": "integer"
+          },
+          "by_work_status": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "By Work Status",
+            "type": "object"
+          },
+          "changed_unread": {
+            "title": "Changed Unread",
+            "type": "integer"
+          },
+          "problem_workflows": {
+            "title": "Problem Workflows",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "actionable_new",
+          "changed_unread",
+          "active_total",
+          "problem_workflows",
+          "by_work_status"
+        ],
+        "title": "CountersView",
+        "type": "object"
+      },
+      "DashboardView": {
+        "properties": {
+          "activity": {
+            "items": {
+              "$ref": "#/components/schemas/EventOut"
+            },
+            "title": "Activity",
+            "type": "array"
+          },
+          "alerts": {
+            "items": {
+              "$ref": "#/components/schemas/EventOut"
+            },
+            "title": "Alerts",
+            "type": "array"
+          },
+          "counters": {
+            "$ref": "#/components/schemas/CountersView"
+          },
+          "last_run": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SyncRunView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session": {
+            "$ref": "#/components/schemas/SessionHealthView"
+          },
+          "workflows": {
+            "items": {
+              "$ref": "#/components/schemas/WorkflowView"
+            },
+            "title": "Workflows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "session",
+          "last_run",
+          "counters",
+          "workflows",
+          "activity",
+          "alerts"
+        ],
+        "title": "DashboardView",
+        "type": "object"
+      },
+      "DossierCommonView": {
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "boolean"
+          },
+          "city": {
+            "title": "City",
+            "type": "string"
+          },
+          "dates": {
+            "items": {
+              "$ref": "#/components/schemas/FieldValue"
+            },
+            "title": "Dates",
+            "type": "array"
+          },
+          "detail_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail Error"
+          },
+          "dossier_number": {
+            "title": "Dossier Number",
+            "type": "string"
+          },
+          "estimate_amount_raw": {
+            "title": "Estimate Amount Raw",
+            "type": "string"
+          },
+          "first_seen_at": {
+            "format": "date-time",
+            "title": "First Seen At",
+            "type": "string"
+          },
+          "garage": {
+            "title": "Garage",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "insured_name": {
+            "title": "Insured Name",
+            "type": "string"
+          },
+          "last_seen_at": {
+            "format": "date-time",
+            "title": "Last Seen At",
+            "type": "string"
+          },
+          "observation_count": {
+            "title": "Observation Count",
+            "type": "string"
+          },
+          "portal_status": {
+            "title": "Portal Status",
+            "type": "string"
+          },
+          "procedure": {
+            "title": "Procedure",
+            "type": "string"
+          },
+          "record_id": {
+            "title": "Record Id",
+            "type": "string"
+          },
+          "registration": {
+            "title": "Registration",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "record_id",
+          "dossier_number",
+          "insured_name",
+          "procedure",
+          "registration",
+          "garage",
+          "portal_status",
+          "city",
+          "observation_count",
+          "estimate_amount_raw",
+          "active",
+          "first_seen_at",
+          "last_seen_at",
+          "detail_error",
+          "dates"
+        ],
+        "title": "DossierCommonView",
+        "type": "object"
+      },
+      "DossierHitView": {
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "boolean"
+          },
+          "dossier_id": {
+            "title": "Dossier Id",
+            "type": "integer"
+          },
+          "dossier_number": {
+            "title": "Dossier Number",
+            "type": "string"
+          },
+          "garage": {
+            "title": "Garage",
+            "type": "string"
+          },
+          "insured_name": {
+            "title": "Insured Name",
+            "type": "string"
+          },
+          "portal_status": {
+            "title": "Portal Status",
+            "type": "string"
+          },
+          "registration": {
+            "title": "Registration",
+            "type": "string"
+          },
+          "workflows": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Workflows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "dossier_id",
+          "dossier_number",
+          "insured_name",
+          "registration",
+          "garage",
+          "portal_status",
+          "active",
+          "workflows"
+        ],
+        "title": "DossierHitView",
+        "type": "object"
+      },
+      "DossierView": {
+        "properties": {
+          "dossier": {
+            "$ref": "#/components/schemas/DossierCommonView"
+          },
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/EventOut"
+            },
+            "title": "Events",
+            "type": "array"
+          },
+          "memberships": {
+            "items": {
+              "$ref": "#/components/schemas/MembershipView"
+            },
+            "title": "Memberships",
+            "type": "array"
+          },
+          "notes": {
+            "items": {
+              "$ref": "#/components/schemas/NoteView"
+            },
+            "title": "Notes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "dossier",
+          "memberships",
+          "events",
+          "notes"
+        ],
+        "title": "DossierView",
+        "type": "object"
+      },
+      "EventOut": {
+        "properties": {
+          "changed_fields": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Changed Fields",
+            "type": "array"
+          },
+          "changed_labels": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Changed Labels",
+            "type": "array"
+          },
+          "detected_at": {
+            "format": "date-time",
+            "title": "Detected At",
+            "type": "string"
+          },
+          "dossier_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dossier Id"
+          },
+          "dossier_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dossier Number"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "insured_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Insured Name"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "membership_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Membership Id"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "notification_class": {
+            "$ref": "#/components/schemas/NotificationClass"
+          },
+          "occurrence_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Occurrence Id"
+          },
+          "workflow_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workflow Key"
+          },
+          "workflow_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workflow Name"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "notification_class",
+          "detected_at",
+          "workflow_key",
+          "workflow_name",
+          "dossier_id",
+          "dossier_number",
+          "insured_name",
+          "occurrence_id",
+          "membership_id",
+          "changed_fields",
+          "changed_labels",
+          "message"
+        ],
+        "title": "EventOut",
+        "type": "object"
+      },
+      "FacetsView": {
+        "properties": {
+          "portal_statuses": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Portal Statuses",
+            "type": "array"
+          },
+          "procedures": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Procedures",
+            "type": "array"
+          },
+          "workflows": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Workflows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "portal_statuses",
+          "procedures",
+          "workflows"
+        ],
+        "title": "FacetsView",
+        "type": "object"
+      },
+      "FieldValue": {
+        "properties": {
+          "date": {
+            "default": false,
+            "title": "Date",
+            "type": "boolean"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "value"
+        ],
+        "title": "FieldValue",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "ItemPage": {
+        "properties": {
+          "columns": {
+            "items": {
+              "$ref": "#/components/schemas/ColumnView"
+            },
+            "title": "Columns",
+            "type": "array"
+          },
+          "facets": {
+            "$ref": "#/components/schemas/FacetsView"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ItemView"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "page_size": {
+            "title": "Page Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "page_size",
+          "facets"
+        ],
+        "title": "ItemPage",
+        "type": "object"
+      },
+      "ItemView": {
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "boolean"
+          },
+          "city": {
+            "title": "City",
+            "type": "string"
+          },
+          "detected_at": {
+            "format": "date-time",
+            "title": "Detected At",
+            "type": "string"
+          },
+          "dossier_id": {
+            "title": "Dossier Id",
+            "type": "integer"
+          },
+          "dossier_number": {
+            "title": "Dossier Number",
+            "type": "string"
+          },
+          "fields": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Fields",
+            "type": "object"
+          },
+          "garage": {
+            "title": "Garage",
+            "type": "string"
+          },
+          "insured_name": {
+            "title": "Insured Name",
+            "type": "string"
+          },
+          "membership_id": {
+            "title": "Membership Id",
+            "type": "integer"
+          },
+          "notification_class": {
+            "$ref": "#/components/schemas/NotificationClass"
+          },
+          "occurrence_id": {
+            "title": "Occurrence Id",
+            "type": "integer"
+          },
+          "occurrence_number": {
+            "title": "Occurrence Number",
+            "type": "integer"
+          },
+          "occurrence_origin": {
+            "$ref": "#/components/schemas/OccurrenceOrigin"
+          },
+          "omegaflow_url": {
+            "title": "Omegaflow Url",
+            "type": "string"
+          },
+          "portal_status": {
+            "title": "Portal Status",
+            "type": "string"
+          },
+          "primary_date": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary Date"
+          },
+          "primary_date_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary Date Label"
+          },
+          "primary_date_raw": {
+            "title": "Primary Date Raw",
+            "type": "string"
+          },
+          "procedure": {
+            "title": "Procedure",
+            "type": "string"
+          },
+          "queue_age_days": {
+            "title": "Queue Age Days",
+            "type": "integer"
+          },
+          "record_id": {
+            "title": "Record Id",
+            "type": "string"
+          },
+          "registration": {
+            "title": "Registration",
+            "type": "string"
+          },
+          "rules_status": {
+            "$ref": "#/components/schemas/WorkflowRulesStatus"
+          },
+          "unread": {
+            "title": "Unread",
+            "type": "boolean"
+          },
+          "unread_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unread Kind"
+          },
+          "work_status": {
+            "$ref": "#/components/schemas/WorkStatus"
+          },
+          "work_version": {
+            "title": "Work Version",
+            "type": "integer"
+          },
+          "workflow_category": {
+            "title": "Workflow Category",
+            "type": "string"
+          },
+          "workflow_key": {
+            "title": "Workflow Key",
+            "type": "string"
+          },
+          "workflow_name": {
+            "title": "Workflow Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workflow_key",
+          "workflow_name",
+          "workflow_category",
+          "notification_class",
+          "rules_status",
+          "membership_id",
+          "occurrence_id",
+          "occurrence_number",
+          "occurrence_origin",
+          "dossier_id",
+          "record_id",
+          "dossier_number",
+          "insured_name",
+          "registration",
+          "garage",
+          "procedure",
+          "portal_status",
+          "city",
+          "active",
+          "detected_at",
+          "primary_date",
+          "primary_date_raw",
+          "primary_date_label",
+          "queue_age_days",
+          "work_status",
+          "work_version",
+          "unread",
+          "unread_kind",
+          "fields",
+          "omegaflow_url"
+        ],
+        "title": "ItemView",
+        "type": "object"
+      },
+      "LastRunView": {
+        "properties": {
+          "baseline": {
+            "title": "Baseline",
+            "type": "boolean"
+          },
+          "changed": {
+            "title": "Changed",
+            "type": "integer"
+          },
+          "created": {
+            "title": "Created",
+            "type": "integer"
+          },
+          "details_failed": {
+            "title": "Details Failed",
+            "type": "integer"
+          },
+          "left": {
+            "title": "Left",
+            "type": "integer"
+          },
+          "returned": {
+            "title": "Returned",
+            "type": "integer"
+          },
+          "rows_seen": {
+            "title": "Rows Seen",
+            "type": "integer"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PollStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "baseline",
+          "rows_seen",
+          "created",
+          "returned",
+          "changed",
+          "left",
+          "details_failed"
+        ],
+        "title": "LastRunView",
+        "type": "object"
+      },
+      "LoginIn": {
+        "properties": {
+          "password": {
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Password",
+            "type": "string"
+          },
+          "username": {
+            "maxLength": 150,
+            "minLength": 1,
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "username",
+          "password"
+        ],
+        "title": "LoginIn",
+        "type": "object"
+      },
+      "MembershipView": {
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "boolean"
+          },
+          "current_occurrence_id": {
+            "title": "Current Occurrence Id",
+            "type": "integer"
+          },
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/FieldValue"
+            },
+            "title": "Fields",
+            "type": "array"
+          },
+          "first_seen_at": {
+            "format": "date-time",
+            "title": "First Seen At",
+            "type": "string"
+          },
+          "last_seen_at": {
+            "format": "date-time",
+            "title": "Last Seen At",
+            "type": "string"
+          },
+          "membership_id": {
+            "title": "Membership Id",
+            "type": "integer"
+          },
+          "notification_class": {
+            "$ref": "#/components/schemas/NotificationClass"
+          },
+          "occurrences": {
+            "items": {
+              "$ref": "#/components/schemas/OccurrenceView"
+            },
+            "title": "Occurrences",
+            "type": "array"
+          },
+          "omegaflow_url": {
+            "title": "Omegaflow Url",
+            "type": "string"
+          },
+          "primary_date": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary Date"
+          },
+          "primary_date_raw": {
+            "title": "Primary Date Raw",
+            "type": "string"
+          },
+          "rules_status": {
+            "$ref": "#/components/schemas/WorkflowRulesStatus"
+          },
+          "work_status": {
+            "$ref": "#/components/schemas/WorkStatus"
+          },
+          "work_updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Work Updated At"
+          },
+          "work_updated_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Work Updated By"
+          },
+          "work_version": {
+            "title": "Work Version",
+            "type": "integer"
+          },
+          "workflow_category": {
+            "title": "Workflow Category",
+            "type": "string"
+          },
+          "workflow_key": {
+            "title": "Workflow Key",
+            "type": "string"
+          },
+          "workflow_name": {
+            "title": "Workflow Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "membership_id",
+          "workflow_key",
+          "workflow_name",
+          "workflow_category",
+          "notification_class",
+          "rules_status",
+          "active",
+          "first_seen_at",
+          "last_seen_at",
+          "work_status",
+          "work_version",
+          "work_updated_at",
+          "work_updated_by",
+          "current_occurrence_id",
+          "occurrences",
+          "fields",
+          "primary_date",
+          "primary_date_raw",
+          "omegaflow_url"
+        ],
+        "title": "MembershipView",
+        "type": "object"
+      },
+      "NoteIn": {
+        "properties": {
+          "body": {
+            "maxLength": 4000,
+            "title": "Body",
+            "type": "string"
+          },
+          "membership_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Membership Id"
+          }
+        },
+        "required": [
+          "body"
+        ],
+        "title": "NoteIn",
+        "type": "object"
+      },
+      "NoteView": {
+        "properties": {
+          "author": {
+            "title": "Author",
+            "type": "string"
+          },
+          "body": {
+            "title": "Body",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "membership_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Membership Id"
+          },
+          "workflow_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workflow Name"
+          }
+        },
+        "required": [
+          "id",
+          "body",
+          "author",
+          "created_at",
+          "membership_id",
+          "workflow_name"
+        ],
+        "title": "NoteView",
+        "type": "object"
+      },
+      "NotificationClass": {
+        "description": "How a workflow's activity reaches employees.\n\n``ACTION`` events can create unread alerts; ``INFORMATIONAL`` events are\nonly shown in history/summaries; ``SILENT`` workflows are synchronized\nfor search and detail context and emit no events.",
+        "enum": [
+          "ACTION",
+          "INFORMATIONAL",
+          "SILENT"
+        ],
+        "title": "NotificationClass",
+        "type": "string"
+      },
+      "OccurrenceOrigin": {
+        "enum": [
+          "BASELINE",
+          "NEW",
+          "RETURNED"
+        ],
+        "title": "OccurrenceOrigin",
+        "type": "string"
+      },
+      "OccurrenceView": {
+        "properties": {
+          "detected_at": {
+            "format": "date-time",
+            "title": "Detected At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "number": {
+            "title": "Number",
+            "type": "integer"
+          },
+          "origin": {
+            "$ref": "#/components/schemas/OccurrenceOrigin"
+          },
+          "unread": {
+            "title": "Unread",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "number",
+          "origin",
+          "detected_at",
+          "unread"
+        ],
+        "title": "OccurrenceView",
+        "type": "object"
+      },
+      "PollRunView": {
+        "properties": {
+          "baseline": {
+            "title": "Baseline",
+            "type": "boolean"
+          },
+          "changed": {
+            "title": "Changed",
+            "type": "integer"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "created": {
+            "title": "Created",
+            "type": "integer"
+          },
+          "details_failed": {
+            "title": "Details Failed",
+            "type": "integer"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "left": {
+            "title": "Left",
+            "type": "integer"
+          },
+          "notifications_created": {
+            "title": "Notifications Created",
+            "type": "integer"
+          },
+          "pages_seen": {
+            "title": "Pages Seen",
+            "type": "integer"
+          },
+          "returned": {
+            "title": "Returned",
+            "type": "integer"
+          },
+          "rows_seen": {
+            "title": "Rows Seen",
+            "type": "integer"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PollStatus"
+          },
+          "sync_run_id": {
+            "title": "Sync Run Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "sync_run_id",
+          "status",
+          "started_at",
+          "completed_at",
+          "baseline",
+          "rows_seen",
+          "pages_seen",
+          "created",
+          "returned",
+          "changed",
+          "left",
+          "notifications_created",
+          "details_failed",
+          "error"
+        ],
+        "title": "PollRunView",
+        "type": "object"
+      },
+      "PollStatus": {
+        "enum": [
+          "COMPLETE",
+          "PARTIAL",
+          "AUTH_REQUIRED",
+          "FAILED"
+        ],
+        "title": "PollStatus",
+        "type": "string"
+      },
+      "Role": {
+        "enum": [
+          "ADMIN",
+          "EMPLOYEE"
+        ],
+        "title": "Role",
+        "type": "string"
+      },
+      "SessionHealthView": {
+        "properties": {
+          "connect_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connect Url"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "last_poll_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Poll At"
+          },
+          "last_success_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Success At"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "syncing": {
+            "title": "Syncing",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "state",
+          "label",
+          "last_poll_at",
+          "last_success_at",
+          "last_error",
+          "syncing",
+          "connect_url"
+        ],
+        "title": "SessionHealthView",
+        "type": "object"
+      },
+      "SyncHealthView": {
+        "properties": {
+          "alerts": {
+            "items": {
+              "$ref": "#/components/schemas/EventOut"
+            },
+            "title": "Alerts",
+            "type": "array"
+          },
+          "last_run": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SyncRunView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "outbox_pending": {
+            "title": "Outbox Pending",
+            "type": "integer"
+          },
+          "pending_sync_requests": {
+            "title": "Pending Sync Requests",
+            "type": "integer"
+          },
+          "recent_runs": {
+            "items": {
+              "$ref": "#/components/schemas/SyncRunView"
+            },
+            "title": "Recent Runs",
+            "type": "array"
+          },
+          "session": {
+            "$ref": "#/components/schemas/SessionHealthView"
+          },
+          "workflows": {
+            "items": {
+              "$ref": "#/components/schemas/WorkflowView"
+            },
+            "title": "Workflows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "session",
+          "last_run",
+          "recent_runs",
+          "workflows",
+          "alerts",
+          "pending_sync_requests",
+          "outbox_pending"
+        ],
+        "title": "SyncHealthView",
+        "type": "object"
+      },
+      "SyncRequestOut": {
+        "properties": {
+          "queued": {
+            "title": "Queued",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "queued"
+        ],
+        "title": "SyncRequestOut",
+        "type": "object"
+      },
+      "SyncRunView": {
+        "properties": {
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PollStatus"
+          },
+          "trigger": {
+            "title": "Trigger",
+            "type": "string"
+          },
+          "workflows_auth_required": {
+            "title": "Workflows Auth Required",
+            "type": "integer"
+          },
+          "workflows_complete": {
+            "title": "Workflows Complete",
+            "type": "integer"
+          },
+          "workflows_failed": {
+            "title": "Workflows Failed",
+            "type": "integer"
+          },
+          "workflows_partial": {
+            "title": "Workflows Partial",
+            "type": "integer"
+          },
+          "workflows_total": {
+            "title": "Workflows Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "trigger",
+          "status",
+          "started_at",
+          "completed_at",
+          "workflows_total",
+          "workflows_complete",
+          "workflows_partial",
+          "workflows_auth_required",
+          "workflows_failed",
+          "error"
+        ],
+        "title": "SyncRunView",
+        "type": "object"
+      },
+      "UserActiveIn": {
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "active"
+        ],
+        "title": "UserActiveIn",
+        "type": "object"
+      },
+      "UserCreateIn": {
+        "properties": {
+          "display_name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Display Name",
+            "type": "string"
+          },
+          "password": {
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Password",
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role",
+            "default": "EMPLOYEE"
+          },
+          "username": {
+            "maxLength": 150,
+            "minLength": 3,
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "username",
+          "display_name",
+          "password"
+        ],
+        "title": "UserCreateIn",
+        "type": "object"
+      },
+      "UserOut": {
+        "properties": {
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          },
+          "username": {
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "username",
+          "display_name",
+          "role"
+        ],
+        "title": "UserOut",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      },
+      "WorkStateView": {
+        "properties": {
+          "membership_id": {
+            "title": "Membership Id",
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/components/schemas/WorkStatus"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "updated_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated By"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "membership_id",
+          "status",
+          "version",
+          "updated_at",
+          "updated_by"
+        ],
+        "title": "WorkStateView",
+        "type": "object"
+      },
+      "WorkStatus": {
+        "enum": [
+          "TO_DO",
+          "IN_PROGRESS",
+          "WAITING",
+          "DONE"
+        ],
+        "title": "WorkStatus",
+        "type": "string"
+      },
+      "WorkStatusIn": {
+        "properties": {
+          "expected_version": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Version"
+          },
+          "status": {
+            "$ref": "#/components/schemas/WorkStatus"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "WorkStatusIn",
+        "type": "object"
+      },
+      "WorkflowConfigIn": {
+        "properties": {
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "notification_class": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NotificationClass"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rules_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkflowRulesStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "WorkflowConfigIn",
+        "type": "object"
+      },
+      "WorkflowDetailView": {
+        "properties": {
+          "columns": {
+            "items": {
+              "$ref": "#/components/schemas/ColumnView"
+            },
+            "title": "Columns",
+            "type": "array"
+          },
+          "filter_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filter Label"
+          },
+          "primary_date_labels": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Primary Date Labels",
+            "type": "array"
+          },
+          "recent_events": {
+            "items": {
+              "$ref": "#/components/schemas/EventOut"
+            },
+            "title": "Recent Events",
+            "type": "array"
+          },
+          "recent_runs": {
+            "items": {
+              "$ref": "#/components/schemas/PollRunView"
+            },
+            "title": "Recent Runs",
+            "type": "array"
+          },
+          "workflow": {
+            "$ref": "#/components/schemas/WorkflowView"
+          }
+        },
+        "required": [
+          "workflow",
+          "filter_label",
+          "primary_date_labels",
+          "columns",
+          "recent_runs",
+          "recent_events"
+        ],
+        "title": "WorkflowDetailView",
+        "type": "object"
+      },
+      "WorkflowRulesStatus": {
+        "description": "Whether employees have approved a workflow's business policy.\n\n``UNCONFIRMED`` workflows are catalogued but inactive. ``CAPTURE_DERIVED``\nworkflows run with the conservative queue-membership policy derived from\nthe ScriptScrap captures and are shown as \"À valider sur site\" until the\nagency validates them. ``CONFIRMED`` workflows were validated by the\nagency. Promoting a rule never changes the event engine.",
+        "enum": [
+          "UNCONFIRMED",
+          "CAPTURE_DERIVED",
+          "CONFIRMED"
+        ],
+        "title": "WorkflowRulesStatus",
+        "type": "string"
+      },
+      "WorkflowView": {
+        "properties": {
+          "active_count": {
+            "title": "Active Count",
+            "type": "integer"
+          },
+          "baseline_completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Baseline Completed At"
+          },
+          "by_work_status": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "By Work Status",
+            "type": "object"
+          },
+          "category": {
+            "title": "Category",
+            "type": "string"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "last_poll_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Poll At"
+          },
+          "last_poll_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PollStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_run": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LastRunView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_success_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Success At"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "needs_site_validation": {
+            "title": "Needs Site Validation",
+            "type": "boolean"
+          },
+          "notification_class": {
+            "$ref": "#/components/schemas/NotificationClass"
+          },
+          "route": {
+            "title": "Route",
+            "type": "string"
+          },
+          "rules_status": {
+            "$ref": "#/components/schemas/WorkflowRulesStatus"
+          },
+          "unread_changed": {
+            "title": "Unread Changed",
+            "type": "integer"
+          },
+          "unread_new": {
+            "title": "Unread New",
+            "type": "integer"
+          },
+          "view_id": {
+            "title": "View Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "name",
+          "category",
+          "route",
+          "view_id",
+          "notification_class",
+          "rules_status",
+          "needs_site_validation",
+          "enabled",
+          "baseline_completed_at",
+          "last_poll_at",
+          "last_success_at",
+          "last_poll_status",
+          "last_error",
+          "active_count",
+          "unread_new",
+          "unread_changed",
+          "by_work_status"
+        ],
+        "title": "WorkflowView",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "Portail RMA",
+    "version": "2.0.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/admin/users": {
+      "get": {
+        "operationId": "list_users_api_v1_admin_users_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AdminUserOut"
+                  },
+                  "title": "Response List Users Api V1 Admin Users Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Users",
+        "tags": [
+          "operations",
+          "admin"
+        ]
+      },
+      "post": {
+        "operationId": "create_user_api_v1_admin_users_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserCreateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminUserOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create User",
+        "tags": [
+          "operations",
+          "admin"
+        ]
+      }
+    },
+    "/api/v1/admin/users/{user_id}": {
+      "patch": {
+        "operationId": "set_user_active_api_v1_admin_users__user_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "title": "User Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserActiveIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminUserOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set User Active",
+        "tags": [
+          "operations",
+          "admin"
+        ]
+      }
+    },
+    "/api/v1/admin/workflows": {
+      "get": {
+        "operationId": "admin_workflows_api_v1_admin_workflows_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/WorkflowView"
+                  },
+                  "title": "Response Admin Workflows Api V1 Admin Workflows Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Admin Workflows",
+        "tags": [
+          "operations",
+          "admin"
+        ]
+      }
+    },
+    "/api/v1/admin/workflows/{key}": {
+      "patch": {
+        "description": "Enable/disable a queue, promote its rules (À valider sur site -> confirmé) or change\nhow its activity reaches employees. The event engine itself never changes.",
+        "operationId": "update_workflow_api_v1_admin_workflows__key__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "title": "Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkflowConfigIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Workflow",
+        "tags": [
+          "operations",
+          "admin"
+        ]
+      }
+    },
+    "/api/v1/ai/anomalies": {
+      "post": {
+        "operationId": "anomalies_api_v1_ai_anomalies_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdvisorOutcomeOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Anomalies",
+        "tags": [
+          "assistant"
+        ]
+      }
+    },
+    "/api/v1/ai/daily-summary": {
+      "post": {
+        "operationId": "daily_summary_api_v1_ai_daily_summary_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdvisorOutcomeOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Daily Summary",
+        "tags": [
+          "assistant"
+        ]
+      }
+    },
+    "/api/v1/ai/status": {
+      "get": {
+        "operationId": "advisor_status_api_v1_ai_status_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdvisorStatusOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Advisor Status",
+        "tags": [
+          "assistant"
+        ]
+      }
+    },
+    "/api/v1/auth/login": {
+      "post": {
+        "operationId": "login_api_v1_auth_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Login",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "operationId": "logout_api_v1_auth_logout_post",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Logout",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/me": {
+      "get": {
+        "operationId": "me_api_v1_auth_me_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Me",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/dashboard": {
+      "get": {
+        "operationId": "dashboard_api_v1_dashboard_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Dashboard",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
+    "/api/v1/dossiers/search": {
+      "get": {
+        "operationId": "search_dossiers_api_v1_dossiers_search_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "maxLength": 100,
+              "minLength": 2,
+              "title": "Q",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/DossierHitView"
+                  },
+                  "title": "Response Search Dossiers Api V1 Dossiers Search Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search Dossiers",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
+    "/api/v1/dossiers/{dossier_id}": {
+      "get": {
+        "description": "Read-only: opening this endpoint never acknowledges anything.",
+        "operationId": "dossier_api_v1_dossiers__dossier_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dossier_id",
+            "required": true,
+            "schema": {
+              "title": "Dossier Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DossierView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Dossier",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
+    "/api/v1/dossiers/{dossier_id}/ai/summary": {
+      "post": {
+        "operationId": "dossier_summary_api_v1_dossiers__dossier_id__ai_summary_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dossier_id",
+            "required": true,
+            "schema": {
+              "title": "Dossier Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdvisorOutcomeOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Dossier Summary",
+        "tags": [
+          "assistant"
+        ]
+      }
+    },
+    "/api/v1/dossiers/{dossier_id}/notes": {
+      "get": {
+        "operationId": "notes_api_v1_dossiers__dossier_id__notes_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dossier_id",
+            "required": true,
+            "schema": {
+              "title": "Dossier Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/NoteView"
+                  },
+                  "title": "Response Notes Api V1 Dossiers  Dossier Id  Notes Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Notes",
+        "tags": [
+          "workspace"
+        ]
+      },
+      "post": {
+        "description": "Notes are shared at dossier level; ``membership_id`` only adds workflow context.",
+        "operationId": "add_note_api_v1_dossiers__dossier_id__notes_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dossier_id",
+            "required": true,
+            "schema": {
+              "title": "Dossier Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NoteIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Note",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
+    "/api/v1/health": {
+      "get": {
+        "operationId": "health_api_v1_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Health Api V1 Health Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/api/v1/inbox": {
+      "get": {
+        "operationId": "inbox_api_v1_inbox_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "workflow",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workflow"
+            }
+          },
+          {
+            "in": "query",
+            "name": "category",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Category"
+            }
+          },
+          {
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Search"
+            }
+          },
+          {
+            "in": "query",
+            "name": "unread",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Unread",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(?i:arrival|changed)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          },
+          {
+            "in": "query",
+            "name": "work_status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/WorkStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Work Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "portal_status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Portal Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "procedure",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Procedure"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "default": "default",
+              "pattern": "^(default|date|detected|age|number|name|status|workflow)$",
+              "title": "Sort",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "order",
+            "required": false,
+            "schema": {
+              "default": "desc",
+              "pattern": "^(asc|desc)$",
+              "title": "Order",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Page Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Inbox",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
+    "/api/v1/memberships/{membership_id}/ai/priority": {
+      "post": {
+        "operationId": "suggest_priority_api_v1_memberships__membership_id__ai_priority_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "membership_id",
+            "required": true,
+            "schema": {
+              "title": "Membership Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdvisorOutcomeOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Suggest Priority",
+        "tags": [
+          "assistant"
+        ]
+      }
+    },
+    "/api/v1/memberships/{membership_id}/work-status": {
+      "put": {
+        "description": "Shared work status of one dossier *in one workflow*.",
+        "operationId": "set_work_status_api_v1_memberships__membership_id__work_status_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "membership_id",
+            "required": true,
+            "schema": {
+              "title": "Membership Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkStatusIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkStateView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "description": "Le statut a été modifié entre-temps."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Work Status",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
+    "/api/v1/occurrences/{occurrence_id}/acknowledge": {
+      "post": {
+        "description": "Opening an occurrence marks its alerts read for the acting employee only.",
+        "operationId": "acknowledge_api_v1_occurrences__occurrence_id__acknowledge_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "occurrence_id",
+            "required": true,
+            "schema": {
+              "title": "Occurrence Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcknowledgeOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Acknowledge",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
+    "/api/v1/occurrences/{occurrence_id}/ai/explain": {
+      "post": {
+        "operationId": "explain_highlight_api_v1_occurrences__occurrence_id__ai_explain_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "occurrence_id",
+            "required": true,
+            "schema": {
+              "title": "Occurrence Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdvisorOutcomeOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Explain Highlight",
+        "tags": [
+          "assistant"
+        ]
+      }
+    },
+    "/api/v1/session": {
+      "get": {
+        "description": "Health of the OmegaFlow session. Never exposes cookies, storage state or credentials.",
+        "operationId": "session_api_v1_session_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionHealthView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Session",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/sync": {
+      "get": {
+        "operationId": "sync_health_api_v1_sync_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncHealthView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Sync Health",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/sync/run": {
+      "post": {
+        "description": "Ask the worker for an immediate cycle; the API process never opens the browser.",
+        "operationId": "request_sync_api_v1_sync_run_post",
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncRequestOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Request Sync",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/workflows": {
+      "get": {
+        "operationId": "workflows_api_v1_workflows_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/WorkflowView"
+                  },
+                  "title": "Response Workflows Api V1 Workflows Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Workflows",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
+    "/api/v1/workflows/{key}": {
+      "get": {
+        "operationId": "workflow_detail_api_v1_workflows__key__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "title": "Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowDetailView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Workflow Detail",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
+    "/api/v1/workflows/{key}/items": {
+      "get": {
+        "operationId": "workflow_items_api_v1_workflows__key__items_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "title": "Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Search"
+            }
+          },
+          {
+            "in": "query",
+            "name": "unread",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Unread",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(?i:arrival|changed)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          },
+          {
+            "in": "query",
+            "name": "work_status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/WorkStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Work Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "portal_status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Portal Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "procedure",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Procedure"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "default": "default",
+              "pattern": "^(default|date|detected|age|number|name|status|workflow)$",
+              "title": "Sort",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "order",
+            "required": false,
+            "schema": {
+              "default": "desc",
+              "pattern": "^(asc|desc)$",
+              "title": "Order",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Page Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Workflow Items",
+        "tags": [
+          "workspace"
+        ]
+      }
+    }
+  }
+}
