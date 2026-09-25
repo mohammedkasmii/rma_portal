@@ -38,6 +38,8 @@ class FakeQueue:
     stale_pages: frozenset[int] = frozenset()
     """1-based page numbers that keep showing the previous page after navigation."""
     include_header: bool = True
+    header_after_filter: bool = False
+    """The shared agreement view: its table (and header) only render once the filter is submitted."""
     login_required: bool = False
     # runtime state
     page_index: int = 0
@@ -50,6 +52,12 @@ class FakeQueue:
                 return [[]]
             return self.by_filter.get(self.active_filter, [[]])
         return self.pages
+
+    @property
+    def header_visible(self) -> bool:
+        if not self.include_header:
+            return False
+        return not self.header_after_filter or self.active_filter is not None
 
     def reset(self) -> None:
         self.page_index = 0
@@ -69,7 +77,7 @@ class FakeQueue:
             self.rows(),
             total_pages=listed,
             next_disabled=last_shown,
-            include_header=self.include_header,
+            include_header=self.header_visible,
             pagination=len(pages) > 1 or listed > 1,
         )
 
@@ -165,7 +173,7 @@ class FakeKnackPage:
         if selector == f"#{queue.definition.view_id}":
             return 1
         if selector.endswith("table thead th"):
-            return len(queue.definition.list_fields) if queue.include_header else 0
+            return len(queue.definition.list_fields) if queue.header_visible else 0
         if "kn-conn" in selector or "kn-search_form" in selector:
             return 1 if queue.definition.filter is not None else 0
         return 0

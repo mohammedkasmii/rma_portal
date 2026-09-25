@@ -550,6 +550,9 @@ class CamoufoxPortalReader:
             if definition.filter is not None:
                 spec = definition.filter
                 await self._apply_filter(page, root, spec.control_selector, spec.value, spec.label)
+                # A filtered view (e.g. the shared agreement view) only renders its table once the
+                # filter is submitted: the header is the evidence, even for zero rows.
+                await self._wait_for_queue_view(page, root, require_table_header=True)
             await self._wait_for_stable_rows(page, root)
 
             html = await page.content()
@@ -647,6 +650,10 @@ class CamoufoxPortalReader:
         reload the scene nor reset pagination, so a second workflow on the same
         route (the agreement variants, or the two Carence tables) first visits
         the home route: every workflow then starts from a freshly rendered page 1.
+
+        Readiness is two-phase for a filtered workflow: here only the authenticated
+        root/container is required (its table appears after the filter is submitted,
+        see ``read_workflow``); an unfiltered workflow still requires its table header.
         """
         if self._current_route == definition.route:
             await page.goto(
@@ -660,7 +667,9 @@ class CamoufoxPortalReader:
             timeout=60_000,
         )
         self._current_route = definition.route
-        await self._wait_for_queue_view(page, definition.root_selector, require_table_header=True)
+        await self._wait_for_queue_view(
+            page, definition.root_selector, require_table_header=definition.filter is None
+        )
 
     async def read_dossier_detail_fields(
         self, dossier: PortalDossierRef, fields: Sequence[FieldSpec]

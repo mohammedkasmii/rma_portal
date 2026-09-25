@@ -116,6 +116,112 @@ async def test_a_view_that_never_renders_its_table_is_failed_not_an_empty_succes
     assert outcome.snapshot.rows == ()
 
 
+def _spy_readiness(reader: CamoufoxPortalReader) -> list[tuple]:
+    """Records, in order, every readiness wait and every filter application."""
+    events: list[tuple] = []
+    wait, apply = reader._wait_for_queue_view, reader._apply_filter
+
+    async def spy_wait(page, *args, require_table_header=False):
+        events.append(("wait", require_table_header))
+        await wait(page, *args, require_table_header=require_table_header)
+
+    async def spy_apply(*args, **kwargs):
+        events.append(("filter",))
+        await apply(*args, **kwargs)
+
+    reader._wait_for_queue_view = spy_wait  # type: ignore[method-assign]
+    reader._apply_filter = spy_apply  # type: ignore[method-assign]
+    return events
+
+
+def _agreement_site(definition, *, by_filter, **queue_options):
+    queue = FakeQueue(definition, by_filter=by_filter, header_after_filter=True, **queue_options)
+    return FakeSite({definition.route: [queue]})
+
+
+@pytest.mark.asyncio
+async def test_a_filtered_workflow_opens_with_the_root_visible_and_no_table_header_yet():
+    definition = _definition("agreement_garage")
+    reader, page = _reader(_agreement_site(definition, by_filter={definition.filter.value: [_rows("g", 2)]}))
+
+    await reader._open_workflow_view(page, definition)  # must not wait for a header that needs the filter
+
+    assert await page.locator(f"{definition.root_selector} table thead th").count() == 0
+
+
+@pytest.mark.asyncio
+async def test_the_filter_is_applied_before_the_table_header_is_required():
+    definition = _definition("agreement_garage")
+    reader, _ = _reader(_agreement_site(definition, by_filter={definition.filter.value: [_rows("g", 2)]}))
+    events = _spy_readiness(reader)
+
+    await reader.read_workflow(definition)
+
+    assert events == [("wait", False), ("filter",), ("wait", True)]
+
+
+@pytest.mark.asyncio
+async def test_the_header_appearing_after_submission_proceeds_to_parsing():
+    definition = _definition("agreement_garage")
+    reader, _ = _reader(
+        _agreement_site(definition, by_filter={definition.filter.value: [_rows("g", 3), _rows("h", 2)]})
+    )
+
+    outcome = await reader.read_workflow(definition)
+
+    assert outcome.status is PollStatus.COMPLETE
+    assert len(outcome.snapshot.rows) == 5
+
+
+@pytest.mark.asyncio
+async def test_an_empty_filtered_table_is_complete_with_zero_rows():
+    definition = _definition("agreement_hifad")
+    reader, _ = _reader(_agreement_site(definition, by_filter={definition.filter.value: [[]]}))
+
+    outcome = await reader.read_workflow(definition)
+
+    assert outcome.status is PollStatus.COMPLETE
+    assert outcome.snapshot.rows == ()
+    assert outcome.error is None
+
+
+@pytest.mark.asyncio
+async def test_a_filtered_view_whose_header_never_renders_after_submission_is_failed():
+    definition = _definition("agreement_normal")
+    site = _agreement_site(definition, by_filter={definition.filter.value: [[]]}, include_header=False)
+    reader, _ = _reader(site)
+
+    outcome = await reader.read_workflow(definition)
+
+    assert outcome.status is PollStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_an_unfiltered_workflow_still_requires_the_table_header_during_navigation():
+    definition = _definition("reserves_pending")
+    assert definition.filter is None
+    reader, page = _reader(FakeSite({definition.route: [FakeQueue(definition, pages=[[]], include_header=False)]}))
+    events = _spy_readiness(reader)
+
+    with pytest.raises(camoufox_reader.PortalReadError):
+        await reader._open_workflow_view(page, definition)
+
+    assert events == [("wait", True)]
+
+
+@pytest.mark.asyncio
+async def test_auth_required_is_unchanged_for_a_filtered_workflow():
+    definition = _definition("agreement_collegial_cid")
+    reader, _ = _reader(
+        _agreement_site(definition, by_filter={definition.filter.value: [_rows("c", 1)]}, login_required=True)
+    )
+
+    outcome = await reader.read_workflow(definition)
+
+    assert outcome.status is PollStatus.AUTH_REQUIRED
+    assert outcome.snapshot.rows == ()
+
+
 @pytest.mark.asyncio
 async def test_pagination_continues_while_the_next_control_stays_enabled():
     """The queue grew while being read: the dropdown lists 2 pages, a 3rd exists."""
