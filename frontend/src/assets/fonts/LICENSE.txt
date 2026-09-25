@@ -1,0 +1,4 @@
+IBM Plex Sans and IBM Plex Mono (latin subset, woff2)
+Copyright © 2017 IBM Corp. with Reserved Font Name "Plex".
+Licensed under the SIL Open Font License, Version 1.1 — https://openfontlicense.org
+The fonts are redistributed unmodified apart from subsetting; they are served from this application, never from a third-party host.

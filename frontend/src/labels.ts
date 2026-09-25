@@ -7,6 +7,13 @@ export const WORK_STATUS_LABELS: Record<WorkStatus, string> = {
   DONE: "Terminé",
 };
 export const WORK_STATUSES = Object.keys(WORK_STATUS_LABELS) as WorkStatus[];
+/** Token suffix (--st-<tone>-*) of each treatment status. */
+export const WORK_STATUS_TONES: Record<WorkStatus, "todo" | "prog" | "wait" | "done"> = {
+  TO_DO: "todo",
+  IN_PROGRESS: "prog",
+  WAITING: "wait",
+  DONE: "done",
+};
 
 export const CLASS_LABELS: Record<NotificationClass, string> = {
   ACTION: "Action",
@@ -43,8 +50,15 @@ export const UNREAD_KIND_LABELS: Record<string, string> = {
   WORKFLOW_ITEM_NEW: "Nouveau",
   NEW_AGREEMENT_DOSSIER: "Nouveau",
   WORKFLOW_ITEM_RETURNED: "Retour",
-  WORKFLOW_ITEM_CHANGED: "Modifié",
+  WORKFLOW_ITEM_CHANGED: "Modification",
 };
+
+/** Marker shown beside a dossier with an unread occurrence; null when nothing is unread. */
+export function changeMarker(kind: string | null | undefined): { tone: "new" | "mod"; label: string } | null {
+  if (!kind) return null;
+  const label = UNREAD_KIND_LABELS[kind] ?? "Non lu";
+  return { tone: kind === "WORKFLOW_ITEM_CHANGED" ? "mod" : "new", label };
+}
 
 const dateFmt = new Intl.DateTimeFormat("fr-FR", { dateStyle: "short", timeStyle: "short" });
 export function formatDateTime(value: string | null | undefined): string {
@@ -53,4 +67,9 @@ export function formatDateTime(value: string | null | undefined): string {
 export function formatAge(days: number): string {
   if (days <= 0) return "aujourd’hui";
   return days === 1 ? "depuis 1 jour" : `depuis ${days} jours`;
+}
+
+const timeFmt = new Intl.DateTimeFormat("fr-FR", { hour: "2-digit", minute: "2-digit" });
+export function formatTime(value: string | null | undefined): string {
+  return value ? timeFmt.format(new Date(value)) : "—";
 }
