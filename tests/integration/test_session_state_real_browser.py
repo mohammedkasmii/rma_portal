@@ -227,7 +227,6 @@ async def test_real_camoufox_reader_restores_and_verifies_authenticated(
         lock_path=settings.browser_lock_path,
         start_route=start_route,
         base_url=synthetic_omegaflow_server,
-        procedure_value="unused-in-this-test",
         timezone_id=settings.portal_timezone,
         session_state_path=settings.session_state_path,
         locale=settings.portal_locale,
