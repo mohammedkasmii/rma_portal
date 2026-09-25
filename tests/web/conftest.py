@@ -55,6 +55,7 @@ def application(settings, uow_factory, portal_account_id, fake_open_and_wait) ->
         catalog_sync=WorkflowCatalogSync(uow_factory, default_catalog()),
         work_service=work_service,
         outbox_processor=OutboxProcessor(uow_factory, {}),
+        outbox_handlers={},
         advisor_service=AdvisorService(uow_factory, work_service, None),
         account_service=account_service,
         dossier_service=dossier_service,

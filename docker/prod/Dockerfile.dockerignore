@@ -1,0 +1,26 @@
+# Build context for docker/prod/Dockerfile (repository root). Unlike the Phase 0 ignore file,
+# alembic/ and alembic.ini are needed; secrets, data, tests and raw captures stay out.
+.git
+.venv
+.env
+.env.*
+!.env.example
+.pytest_cache
+.ruff_cache
+__pycache__
+*.pyc
+tests
+docs
+scripts
+compose*.yaml
+backups
+*.bat
+*.ps1
+*.sqlite3*
+Solution.java
+pytest-*.txt
+script_scrap
+frontend/node_modules
+frontend/dist
+frontend/*.tsbuildinfo
+frontend/coverage

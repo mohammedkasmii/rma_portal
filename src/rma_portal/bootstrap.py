@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from rma_portal.application.accounts import AccountService
 from rma_portal.application.ai import AdvisorService, AiJobHandler
 from rma_portal.application.dossier_service import DossierService
-from rma_portal.application.outbox import OutboxProcessor, log_delivery
+from rma_portal.application.outbox import OutboxHandler, OutboxProcessor, log_delivery
 from rma_portal.application.ports import PortalReaderFactory, UnitOfWorkFactory
 from rma_portal.application.work_service import WorkService
 from rma_portal.application.workflow_catalog_sync import WorkflowCatalogSync
@@ -20,6 +20,7 @@ from rma_portal.application.workflow_sync import SyncWorkflows
 from rma_portal.config import Settings, load_settings
 from rma_portal.domain.enums import OutboxTopic, SyncTrigger
 from rma_portal.infrastructure.ai.ollama import build_advisor
+from rma_portal.infrastructure.db.advisory_lock import build_cycle_lock
 from rma_portal.infrastructure.db.models import Base
 from rma_portal.infrastructure.db.session import create_engine_for, create_session_factory
 from rma_portal.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWorkFactory
@@ -39,6 +40,7 @@ class Application:
     catalog_sync: WorkflowCatalogSync
     work_service: WorkService
     outbox_processor: OutboxProcessor
+    outbox_handlers: dict[str, OutboxHandler]
     advisor_service: AdvisorService
     account_service: AccountService
     dossier_service: DossierService
@@ -81,6 +83,7 @@ def build_application(settings: Settings | None = None) -> Application:
         timezone_id=settings.portal_timezone,
         max_detail_reads_per_cycle=settings.max_detail_reads_per_cycle,
         ai_jobs_enabled=advisor is not None,
+        cycle_lock=build_cycle_lock(engine),
     )
     password_hasher = Argon2PasswordHasher()
     account_service = AccountService(uow_factory, password_hasher)
@@ -92,14 +95,12 @@ def build_application(settings: Settings | None = None) -> Application:
         connect_url=settings.novnc_url or None,
     )
     advisor_service = AdvisorService(uow_factory, work_service, advisor)
-    outbox_processor = OutboxProcessor(
-        uow_factory,
-        {
-            OutboxTopic.NOTIFICATION_CREATED.value: log_delivery,
-            OutboxTopic.WORKFLOW_EVENT_RECORDED.value: log_delivery,
-            OutboxTopic.AI_JOB_REQUESTED.value: AiJobHandler(advisor_service),
-        },
-    )
+    outbox_handlers: dict[str, OutboxHandler] = {
+        OutboxTopic.NOTIFICATION_CREATED.value: log_delivery,
+        OutboxTopic.WORKFLOW_EVENT_RECORDED.value: log_delivery,
+        OutboxTopic.AI_JOB_REQUESTED.value: AiJobHandler(advisor_service),
+    }
+    outbox_processor = OutboxProcessor(uow_factory, outbox_handlers)
     dossier_service = DossierService(uow_factory)
     # Verifies the session immediately after the employee closes the login
     # window (bounded, no queue/enrichment read -- see
@@ -125,6 +126,7 @@ def build_application(settings: Settings | None = None) -> Application:
         catalog_sync=catalog_sync,
         work_service=work_service,
         outbox_processor=outbox_processor,
+        outbox_handlers=outbox_handlers,
         advisor_service=advisor_service,
         account_service=account_service,
         dossier_service=dossier_service,

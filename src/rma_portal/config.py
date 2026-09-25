@@ -65,6 +65,12 @@ class Settings:
     ollama_base_url: str = "http://host.docker.internal:11434"
     ollama_model: str = "qwen3:8b"
     ollama_timeout_seconds: float = 45.0
+    browser_profile_dir_override: str = ""
+    browser_lock_path_override: str = ""
+    session_state_path_override: str = ""
+    log_dir_override: str = ""
+    """Production containers keep the browser profile and captured session on their own
+    volumes, shared between the browser desktop and the worker."""
     database_url_override: str = ""
     """Full SQLAlchemy URL (``RMA_PORTAL_DATABASE_URL``). Empty means the
     legacy single-file SQLite database under ``data_dir``; the production
@@ -84,10 +90,14 @@ class Settings:
 
     @property
     def browser_profile_dir(self) -> Path:
+        if self.browser_profile_dir_override:
+            return Path(self.browser_profile_dir_override)
         return self.data_dir / "browser-profile"
 
     @property
     def browser_lock_path(self) -> Path:
+        if self.browser_lock_path_override:
+            return Path(self.browser_lock_path_override)
         return self.data_dir / "browser-profile.lock"
 
     @property
@@ -99,14 +109,27 @@ class Settings:
         """Captured OmegaFlow browser session (cookies/localStorage/
         sessionStorage) -- see infrastructure.portal.session_state. Lives
         next to the browser profile, never inside the source checkout."""
+        if self.session_state_path_override:
+            return Path(self.session_state_path_override)
         return self.data_dir / "omegaflow-session-state.json"
 
     @property
     def log_dir(self) -> Path:
+        if self.log_dir_override:
+            return Path(self.log_dir_override)
         return self.data_dir / "logs"
 
+    @property
+    def worker_heartbeat_path(self) -> Path:
+        return self.data_dir / "worker.heartbeat"
+
     def ensure_directories(self) -> None:
-        for directory in (self.data_dir, self.browser_profile_dir, self.log_dir):
+        for directory in (
+            self.data_dir,
+            self.browser_profile_dir,
+            self.log_dir,
+            self.session_state_path.parent,
+        ):
             directory.mkdir(parents=True, exist_ok=True)
 
     def load_or_create_session_secret(self) -> str:
@@ -126,17 +149,27 @@ class Settings:
 
 
 def load_settings() -> Settings:
+    defaults = Settings()
     settings = Settings(
         data_dir=_env_path("RMA_PORTAL_DATA_DIR", _default_data_dir()),
         host=os.environ.get("RMA_PORTAL_HOST", "0.0.0.0"),
         port=_env_int("RMA_PORTAL_PORT", 8765),
         poll_interval_seconds=_env_int("RMA_PORTAL_POLL_INTERVAL_SECONDS", 300),
+        omegaflow_base_url=os.environ.get("RMA_PORTAL_OMEGAFLOW_BASE_URL", defaults.omegaflow_base_url),
+        omegaflow_start_route=os.environ.get(
+            "RMA_PORTAL_OMEGAFLOW_START_ROUTE", defaults.omegaflow_start_route
+        ),
+        portal_timezone=os.environ.get("RMA_PORTAL_TIMEZONE", defaults.portal_timezone),
         max_detail_reads_per_cycle=_env_int("RMA_PORTAL_MAX_DETAIL_READS_PER_CYCLE", 60),
         session_lifetime_hours=_env_int("RMA_PORTAL_SESSION_LIFETIME_HOURS", 12),
         session_verify_timeout_seconds=_env_int("RMA_PORTAL_SESSION_VERIFY_TIMEOUT_SECONDS", 45),
         headless_browser=_env_bool("RMA_PORTAL_HEADLESS_BROWSER", True),
         session_secret=os.environ.get("RMA_PORTAL_SESSION_SECRET", ""),
         database_url_override=os.environ.get("RMA_PORTAL_DATABASE_URL", ""),
+        browser_profile_dir_override=os.environ.get("RMA_PORTAL_BROWSER_PROFILE_DIR", ""),
+        browser_lock_path_override=os.environ.get("RMA_PORTAL_BROWSER_LOCK_PATH", ""),
+        session_state_path_override=os.environ.get("RMA_PORTAL_SESSION_STATE_PATH", ""),
+        log_dir_override=os.environ.get("RMA_PORTAL_LOG_DIR", ""),
         novnc_url=os.environ.get("RMA_PORTAL_NOVNC_URL", ""),
         allowed_origins=tuple(
             origin.strip().rstrip("/")

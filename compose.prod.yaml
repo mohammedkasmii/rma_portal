@@ -1,0 +1,248 @@
+# RMA Platform V2 -- production stack (Ubuntu VM).
+#
+#   cp .env.example .env && $EDITOR .env        # set the three secrets and the public URLs
+#   docker compose -f compose.prod.yaml build
+#   docker compose -f compose.prod.yaml up -d
+#
+# Fully isolated from every other stack on the host (including wexia-* and the Phase 0
+# rma-poc stack): its own project name, network, volumes and published ports (RMA_WEB_PORT,
+# RMA_NOVNC_PORT). Nothing external is referenced, PostgreSQL is never published, and no
+# Redis/Celery/Kubernetes/microservices are involved -- one repository, one image version,
+# separate API and worker processes.
+name: rma-portal
+
+x-app-image: &app-image rma-portal:${RMA_VERSION:-2.0.0}
+
+x-app-env: &app-env
+  RMA_PORTAL_DATABASE_URL: postgresql+psycopg://rma:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/rma
+  RMA_PORTAL_SESSION_SECRET: ${RMA_SESSION_SECRET:?set RMA_SESSION_SECRET (openssl rand -hex 32)}
+  RMA_PORTAL_DATA_DIR: /var/lib/rma-portal
+  RMA_PORTAL_LOG_DIR: /var/log/rma-portal
+  RMA_PORTAL_TIMEZONE: ${RMA_TIMEZONE:-Africa/Casablanca}
+  RMA_PORTAL_OMEGAFLOW_BASE_URL: ${OMEGAFLOW_BASE_URL:-https://omegaflow.ma}
+  RMA_PORTAL_OMEGAFLOW_START_ROUTE: ${OMEGAFLOW_START_ROUTE:-https://omegaflow.ma/#dossiers-en-instance-accord/}
+  RMA_PORTAL_POLL_INTERVAL_SECONDS: ${RMA_POLL_INTERVAL_SECONDS:-300}
+  RMA_PORTAL_MAX_DETAIL_READS_PER_CYCLE: ${RMA_MAX_DETAIL_READS_PER_CYCLE:-60}
+  RMA_PORTAL_NOVNC_URL: ${RMA_NOVNC_URL:-}
+  RMA_PORTAL_ALLOWED_ORIGINS: ${RMA_PUBLIC_ORIGIN:-}
+  RMA_PORTAL_COOKIE_SECURE: ${RMA_COOKIE_SECURE:-false}
+  RMA_PORTAL_OLLAMA_ENABLED: ${RMA_OLLAMA_ENABLED:-false}
+  RMA_PORTAL_OLLAMA_BASE_URL: ${RMA_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+  RMA_PORTAL_OLLAMA_MODEL: ${RMA_OLLAMA_MODEL:-qwen3:8b}
+  RMA_PORTAL_OLLAMA_TIMEOUT_SECONDS: ${RMA_OLLAMA_TIMEOUT_SECONDS:-45}
+  TZ: ${RMA_TIMEZONE:-Africa/Casablanca}
+
+x-hardening: &hardening
+  init: true
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  cap_drop: [ALL]
+
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "5"
+
+services:
+  db:
+    image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
+    container_name: rma-portal-db
+    init: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    environment:
+      POSTGRES_USER: rma
+      POSTGRES_DB: rma
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      TZ: ${RMA_TIMEZONE:-Africa/Casablanca}
+    volumes:
+      - rma-portal-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rma -d rma"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    networks: [rma-portal-net]
+    <<: *logging
+
+  # One-shot: applies the additive migrations and refreshes the workflow catalog.
+  migrate:
+    image: *app-image
+    build:
+      context: .
+      dockerfile: docker/prod/Dockerfile
+      target: runtime
+    container_name: rma-portal-migrate
+    command: ["migrate"]
+    init: true
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    environment: *app-env
+    volumes:
+      - rma-portal-data:/var/lib/rma-portal
+      - rma-portal-logs:/var/log/rma-portal
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [rma-portal-net]
+    <<: *logging
+
+  api:
+    image: *app-image
+    container_name: rma-portal-api
+    command: ["serve"]
+    <<: [*hardening, *logging]
+    environment:
+      <<: *app-env
+      RMA_PORTAL_HOST: 0.0.0.0
+      RMA_PORTAL_PORT: "8765"
+      RMA_PORTAL_RUN_SCHEDULER: "false"
+      FORWARDED_ALLOW_IPS: "*"
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - rma-portal-data:/var/lib/rma-portal
+      - rma-portal-logs:/var/log/rma-portal
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "--max-time", "4", "http://127.0.0.1:8765/api/v1/health"]
+      interval: 15s
+      timeout: 6s
+      retries: 4
+      start_period: 20s
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks: [rma-portal-net]
+
+  # The scheduler/worker: one poll cycle at a time (PostgreSQL advisory lock), on-demand cycles
+  # requested by the API, and the outbox. Headless Camoufox reuses the captured session.
+  worker:
+    image: *app-image
+    container_name: rma-portal-worker
+    command: ["worker"]
+    init: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    <<: *logging
+    environment:
+      <<: *app-env
+      RMA_PORTAL_RUN_SCHEDULER: "false"
+      RMA_PORTAL_HEADLESS_BROWSER: "true"
+      RMA_PORTAL_BROWSER_PROFILE_DIR: /var/lib/rma-poc/profile/browser-profile
+      RMA_PORTAL_SESSION_STATE_PATH: /var/lib/rma-poc/state/omegaflow-session-state.json
+      RMA_PORTAL_BROWSER_LOCK_PATH: /var/lib/rma-poc/state/browser-profile.lock
+    shm_size: "1gb"
+    volumes:
+      - rma-portal-data:/var/lib/rma-portal
+      - rma-portal-logs:/var/log/rma-portal
+      - rma-portal-browser-profile:/var/lib/rma-poc/profile
+      - rma-portal-session-state:/var/lib/rma-poc/state
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "rma-portal", "worker-health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks: [rma-portal-net]
+
+  # Reverse proxy + React static frontend: the only web entry point employees use.
+  web:
+    image: rma-portal-web:${RMA_VERSION:-2.0.0}
+    build:
+      context: .
+      dockerfile: docker/prod/Dockerfile
+      target: web
+    container_name: rma-portal-web
+    init: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETGID, SETUID]
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/cache/nginx
+      - /var/run
+    ports:
+      - "${RMA_WEB_PORT:-8480}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [rma-portal-net]
+    <<: *logging
+
+  # The validated Phase 0 noVNC desktop: the administrator logs in to OmegaFlow here
+  # (`scripts/prod/connect-session.sh`); the worker reuses the captured session.
+  browser:
+    image: *app-image
+    container_name: rma-portal-browser
+    entrypoint: ["/opt/rma-poc/bin/entrypoint.sh"]
+    init: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    <<: *logging
+    shm_size: "1gb"
+    environment:
+      POC_VNC_PASSWORD: ${RMA_VNC_PASSWORD:?set RMA_VNC_PASSWORD (first 8 characters are used)}
+      POC_OMEGAFLOW_BASE_URL: ${OMEGAFLOW_BASE_URL:-https://omegaflow.ma}
+      POC_OMEGAFLOW_START_ROUTE: ${OMEGAFLOW_START_ROUTE:-https://omegaflow.ma/#dossiers-en-instance-accord/}
+      POC_LOCALE: fr-FR
+      POC_TIMEZONE: ${RMA_TIMEZONE:-Africa/Casablanca}
+      TZ: ${RMA_TIMEZONE:-Africa/Casablanca}
+      POC_SCREEN: ${RMA_SCREEN:-1440x900x24}
+    ports:
+      - "${RMA_NOVNC_PORT:-6081}:6080"
+    volumes:
+      - rma-portal-browser-profile:/var/lib/rma-poc/profile
+      - rma-portal-session-state:/var/lib/rma-poc/state
+    healthcheck:
+      test: ["CMD", "/opt/rma-poc/bin/healthcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    networks: [rma-portal-net]
+
+networks:
+  rma-portal-net:
+    name: rma-portal-net
+
+volumes:
+  rma-portal-pgdata:
+    name: rma-portal-pgdata
+  rma-portal-data:
+    name: rma-portal-data
+  rma-portal-logs:
+    name: rma-portal-logs
+  rma-portal-browser-profile:
+    name: rma-portal-browser-profile
+  rma-portal-session-state:
+    name: rma-portal-session-state
