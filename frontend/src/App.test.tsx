@@ -40,7 +40,7 @@ describe("routing and roles", () => {
     server(admin);
     renderApp(<App />, "/admin/users");
 
-    expect(await screen.findByRole("heading", { name: "Utilisateurs" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: /Utilisateurs/ })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Connexion OmegaFlow/ })).toBeInTheDocument();
     await userEvent.click(await screen.findByRole("button", { name: /Devis et photos/ }));
     expect(screen.getByRole("link", { name: /File désactivée/ })).toBeInTheDocument();

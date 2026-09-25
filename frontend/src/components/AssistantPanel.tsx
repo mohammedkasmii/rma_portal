@@ -86,7 +86,7 @@ export function AssistantPanel({ scope }: { scope: Scope }) {
       <p className="muted">
         <small>Modèle {status.data.model}. Suggestions fondées sur les données synchronisées ; aucune action n’est effectuée.</small>
       </p>
-      <div className="actions">
+      <div className="actions-row">
         {scope.kind === "dashboard" ? (
           <>
             <button type="button" disabled={run.isPending} onClick={() => launch("Résumé de la journée", "/ai/daily-summary")}>

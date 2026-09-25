@@ -283,3 +283,43 @@ tr:hover .row-actions, .row-actions:focus-within, tr.row-selected .row-actions {
   .fact { grid-template-columns: 120px minmax(0, 1fr); }
   .shell main:has(.action-bar) { padding-bottom: 176px; }
 }
+
+/* Administration */
+.badges { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.actions-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); margin-top: var(--space-3); }
+.session-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-4); align-items: start; }
+.session-head { display: flex; align-items: center; gap: 14px; padding: 18px var(--space-5); border-bottom: 1px solid var(--border); }
+.session-head h2 { font-size: 17px; line-height: 22px; }
+.session-icon { display: flex; width: 40px; height: 40px; align-items: center; justify-content: center; border-radius: var(--radius-lg); flex: none; }
+.session-icon-ok { background: var(--ok-soft); color: var(--ok); }
+.session-icon-danger { background: var(--danger-soft); color: var(--danger); }
+.session-actions { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-5); }
+.summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); }
+.summary > div { display: flex; flex-direction: column; gap: 6px; padding: 14px 18px; border-right: 1px solid var(--border); min-width: 0; }
+.summary > div:last-child { border-right: 0; }
+.summary-key { font: 500 12px/1 var(--font); color: var(--text-3); }
+.summary-value { display: flex; align-items: center; gap: var(--space-2); font: 600 16px/1.2 var(--font); }
+.summary-sub { font: 400 12px/1.3 var(--font); color: var(--text-3); }
+.admin-table { font-size: 13px; }
+.admin-table th, .admin-table td { padding: 8px var(--space-4); border-bottom: 1px solid var(--border); text-align: left; vertical-align: middle; }
+.admin-table thead th { background: var(--surface-2); height: 36px; font: 600 12px/1 var(--font); color: var(--text-2); white-space: nowrap; }
+.admin-table tbody th { font-weight: 500; }
+.admin-table tr:last-child td, .admin-table tr:last-child th[scope="row"] { border-bottom: 0; }
+.admin-table .row-problem { background: var(--danger-soft); }
+.admin-table .group-row th { background: var(--surface-2); font: 600 13px/1 var(--font); height: 36px; }
+.error-cell { color: var(--danger-fg); max-width: 380px; overflow-wrap: anywhere; }
+.input-sm { height: 32px; padding: 0 8px; font-size: 13px; width: auto; min-width: 170px; }
+.inline-controls { display: inline-flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.user-form-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-4); padding: var(--space-4); }
+.user-form-foot { display: flex; align-items: center; gap: var(--space-2); padding: 0 var(--space-4) var(--space-4); }
+@media (max-width: 1023px) {
+  .session-grid { grid-template-columns: minmax(0, 1fr); }
+  .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .summary > div:nth-child(2n) { border-right: 0; }
+  .summary > div:nth-child(-n + 2) { border-bottom: 1px solid var(--border); }
+  .user-form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 767px) {
+  .user-form-grid { grid-template-columns: minmax(0, 1fr); }
+  .actions-row .btn { width: 100%; }
+}
