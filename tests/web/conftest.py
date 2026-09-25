@@ -5,6 +5,8 @@ from starlette.testclient import TestClient
 
 from rma_portal.application.accounts import AccountService
 from rma_portal.application.dossier_service import DossierService
+from rma_portal.application.outbox import OutboxProcessor
+from rma_portal.application.work_service import WorkService
 from rma_portal.application.workflow_catalog_sync import WorkflowCatalogSync
 from rma_portal.bootstrap import Application
 from rma_portal.domain.enums import Role
@@ -47,6 +49,10 @@ def application(settings, uow_factory, portal_account_id, fake_open_and_wait) ->
         reader_factory=reader_factory,
         sync_service=sync_service,
         catalog_sync=WorkflowCatalogSync(uow_factory, default_catalog()),
+        work_service=WorkService(
+            uow_factory, default_catalog(), base_url="https://omegaflow.example", connect_url="https://vnc.example/"
+        ),
+        outbox_processor=OutboxProcessor(uow_factory, {}),
         account_service=account_service,
         dossier_service=dossier_service,
         session_connector=session_connector,

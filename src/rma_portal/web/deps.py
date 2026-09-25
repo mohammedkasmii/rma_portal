@@ -59,5 +59,12 @@ def check_same_origin(request: Request) -> None:
     if not header:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Origine manquante.")
     parsed = urlsplit(header)
-    if (parsed.scheme, parsed.netloc) != (request.url.scheme, request.url.netloc):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Origine invalide.")
+    if (parsed.scheme, parsed.netloc) == (request.url.scheme, request.url.netloc):
+        return
+    # Behind a reverse proxy the externally visible origin can differ from the one the
+    # application sees; only origins listed explicitly by the administrator are added.
+    application = getattr(request.app.state, "application", None)
+    allowed = getattr(getattr(application, "settings", None), "allowed_origins", ())
+    if f"{parsed.scheme}://{parsed.netloc}" in allowed:
+        return
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Origine invalide.")

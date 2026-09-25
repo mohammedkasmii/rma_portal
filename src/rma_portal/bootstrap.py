@@ -11,11 +11,13 @@ from dataclasses import dataclass
 
 from rma_portal.application.accounts import AccountService
 from rma_portal.application.dossier_service import DossierService
+from rma_portal.application.outbox import OutboxProcessor, log_delivery
 from rma_portal.application.ports import PortalReaderFactory, UnitOfWorkFactory
+from rma_portal.application.work_service import WorkService
 from rma_portal.application.workflow_catalog_sync import WorkflowCatalogSync
 from rma_portal.application.workflow_sync import SyncWorkflows
 from rma_portal.config import Settings, load_settings
-from rma_portal.domain.enums import SyncTrigger
+from rma_portal.domain.enums import OutboxTopic, SyncTrigger
 from rma_portal.infrastructure.db.models import Base
 from rma_portal.infrastructure.db.session import create_engine_for, create_session_factory
 from rma_portal.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWorkFactory
@@ -33,6 +35,8 @@ class Application:
     reader_factory: PortalReaderFactory
     sync_service: SyncWorkflows
     catalog_sync: WorkflowCatalogSync
+    work_service: WorkService
+    outbox_processor: OutboxProcessor
     account_service: AccountService
     dossier_service: DossierService
     session_connector: SessionConnector
@@ -70,6 +74,20 @@ def build_application(settings: Settings | None = None) -> Application:
     )
     password_hasher = Argon2PasswordHasher()
     account_service = AccountService(uow_factory, password_hasher)
+    work_service = WorkService(
+        uow_factory,
+        catalog,
+        base_url=settings.omegaflow_base_url,
+        timezone_id=settings.portal_timezone,
+        connect_url=settings.novnc_url or None,
+    )
+    outbox_processor = OutboxProcessor(
+        uow_factory,
+        {
+            OutboxTopic.NOTIFICATION_CREATED.value: log_delivery,
+            OutboxTopic.WORKFLOW_EVENT_RECORDED.value: log_delivery,
+        },
+    )
     dossier_service = DossierService(uow_factory)
     # Verifies the session immediately after the employee closes the login
     # window (bounded, no queue/enrichment read -- see
@@ -93,6 +111,8 @@ def build_application(settings: Settings | None = None) -> Application:
         reader_factory=reader_factory,
         sync_service=sync_service,
         catalog_sync=catalog_sync,
+        work_service=work_service,
+        outbox_processor=outbox_processor,
         account_service=account_service,
         dossier_service=dossier_service,
         session_connector=session_connector,

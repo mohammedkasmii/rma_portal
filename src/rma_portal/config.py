@@ -54,6 +54,17 @@ class Settings:
     headless_browser: bool = True
     session_cookie_name: str = "rma_portal_session"
     session_secret: str = ""
+    novnc_url: str = ""
+    """Where an administrator reconnects the OmegaFlow session (the noVNC desktop)."""
+    allowed_origins: tuple[str, ...] = ()
+    """Extra origins accepted by the same-origin mutation check (behind a proxy)."""
+    cookie_secure: bool = False
+    run_scheduler: bool = True
+    """False for the API process of the production stack: the worker owns polling."""
+    ollama_enabled: bool = False
+    ollama_base_url: str = "http://host.docker.internal:11434"
+    ollama_model: str = "qwen3:8b"
+    ollama_timeout_seconds: float = 45.0
     database_url_override: str = ""
     """Full SQLAlchemy URL (``RMA_PORTAL_DATABASE_URL``). Empty means the
     legacy single-file SQLite database under ``data_dir``; the production
@@ -126,5 +137,17 @@ def load_settings() -> Settings:
         headless_browser=_env_bool("RMA_PORTAL_HEADLESS_BROWSER", True),
         session_secret=os.environ.get("RMA_PORTAL_SESSION_SECRET", ""),
         database_url_override=os.environ.get("RMA_PORTAL_DATABASE_URL", ""),
+        novnc_url=os.environ.get("RMA_PORTAL_NOVNC_URL", ""),
+        allowed_origins=tuple(
+            origin.strip().rstrip("/")
+            for origin in os.environ.get("RMA_PORTAL_ALLOWED_ORIGINS", "").split(",")
+            if origin.strip()
+        ),
+        cookie_secure=_env_bool("RMA_PORTAL_COOKIE_SECURE", False),
+        run_scheduler=_env_bool("RMA_PORTAL_RUN_SCHEDULER", True),
+        ollama_enabled=_env_bool("RMA_PORTAL_OLLAMA_ENABLED", False),
+        ollama_base_url=os.environ.get("RMA_PORTAL_OLLAMA_BASE_URL", "http://host.docker.internal:11434"),
+        ollama_model=os.environ.get("RMA_PORTAL_OLLAMA_MODEL", "qwen3:8b"),
+        ollama_timeout_seconds=float(os.environ.get("RMA_PORTAL_OLLAMA_TIMEOUT_SECONDS", "45")),
     )
     return settings

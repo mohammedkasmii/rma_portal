@@ -51,7 +51,7 @@ def login_submit(
         max_age=app.settings.session_lifetime_hours * 3600,
         httponly=True,
         samesite="lax",
-        secure=False,
+        secure=app.settings.cookie_secure,
     )
     return response
 

@@ -22,6 +22,7 @@ from fastapi.templating import Jinja2Templates
 from rma_portal.bootstrap import Application, build_application
 from rma_portal.infrastructure.scheduler.poller import PollScheduler
 from rma_portal.infrastructure.security.sessions import SessionCodec
+from rma_portal.web.api import router as api_router
 from rma_portal.web.routes import (
     admin_session,
     admin_users,
@@ -66,7 +67,9 @@ def create_app(application: Application | None = None) -> FastAPI:
         scheduler = PollScheduler(
             application.sync_service, application.settings.poll_interval_seconds
         )
-        scheduler.start()
+        # The production stack runs the scheduler in its own worker process.
+        if application.settings.run_scheduler:
+            scheduler.start()
         try:
             yield
         finally:
@@ -111,6 +114,7 @@ def create_app(application: Application | None = None) -> FastAPI:
         return response
 
     app.include_router(health.router)
+    app.include_router(api_router)
     app.include_router(auth.router)
     app.include_router(dashboard.router)
     app.include_router(dossier.router)

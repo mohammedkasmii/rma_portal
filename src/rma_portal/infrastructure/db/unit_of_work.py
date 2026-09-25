@@ -4,6 +4,7 @@ from types import TracebackType
 
 from sqlalchemy.orm import Session, sessionmaker
 
+from rma_portal.infrastructure.db.queries import SqlAlchemyWorkQueries
 from rma_portal.infrastructure.db.repositories import (
     SqlAlchemyDossierNoteRepository,
     SqlAlchemyDossierRepository,
@@ -38,6 +39,7 @@ class SqlAlchemyUnitOfWork:
         self.workflow_poll_runs = SqlAlchemyWorkflowPollRunRepository(session)
         self.workflow_events = SqlAlchemyWorkflowEventRepository(session)
         self.outbox = SqlAlchemyOutboxRepository(session)
+        self.queries = SqlAlchemyWorkQueries(session)
         self.ai_runs = SqlAlchemyAiRunRepository(session)
         self.dossiers = SqlAlchemyDossierRepository(session)
         self.notifications = SqlAlchemyNotificationRepository(session)

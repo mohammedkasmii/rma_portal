@@ -18,6 +18,12 @@ from rma_portal.application.dto import (
     PortalDossierRef,
     WorkflowReadOutcome,
 )
+from rma_portal.application.read_models import (
+    DossierHit,
+    EventView,
+    InboxRecord,
+    WorkflowStat,
+)
 from rma_portal.domain.enums import (
     AiFeature,
     NotificationClass,
@@ -449,6 +455,39 @@ class AiRunRepository(Protocol):
     def recent(self, limit: int = 20) -> list[AiRun]: ...
 
 
+class WorkQueries(Protocol):
+    """Read-side queries behind the employee API (see ``application.read_models``)."""
+
+    def inbox_records(
+        self,
+        user_id: int,
+        *,
+        workflow_ids: list[int] | None = None,
+        dossier_id: int | None = None,
+        active_only: bool = True,
+    ) -> list[InboxRecord]: ...
+
+    def unread_occurrence_ids(self, user_id: int, dossier_id: int) -> set[int]: ...
+
+    def occurrence_owner(self, occurrence_id: int) -> tuple[int, int] | None: ...
+
+    def membership_owner(self, membership_id: int) -> tuple[int, int] | None: ...
+
+    def workflow_stats(self, user_id: int, account_id: int) -> list[WorkflowStat]: ...
+
+    def events(
+        self,
+        *,
+        limit: int = 30,
+        workflow_ids: list[int] | None = None,
+        dossier_id: int | None = None,
+        classes: tuple[NotificationClass, ...] | None = None,
+        operational: bool = False,
+    ) -> list[EventView]: ...
+
+    def search_dossiers(self, needle: str, limit: int = 25) -> list[DossierHit]: ...
+
+
 class CycleLock(Protocol):
     """Guarantees that only one synchronization cycle runs across every process.
 
@@ -473,6 +512,7 @@ class UnitOfWork(Protocol):
     workflow_events: WorkflowEventRepository
     outbox: OutboxRepository
     ai_runs: AiRunRepository
+    queries: WorkQueries
     dossiers: DossierRepository
     notifications: NotificationRepository
     users: UserRepository
