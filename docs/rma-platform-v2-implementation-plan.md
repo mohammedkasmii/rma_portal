@@ -8,6 +8,11 @@ membership itself. Therefore V2 uses first appearance in a queue as the notifica
 captured date is displayed and used for sorting when its meaning is known, but no date is treated
 as a deadline until the agency confirms an SLA.
 
+Workflow rules use three states: `UNCONFIRMED` (catalogued but inactive), `CAPTURE_DERIVED`
+(enabled with the conservative membership policy in this document), and `CONFIRMED` (validated by
+the agency). Tomorrow's live validation can promote or correct a rule without changing the event
+engine.
+
 This policy is conservative: it detects work that employees currently discover by opening queue
 pages, while avoiding invented deadline, completion, or escalation rules.
 
@@ -227,4 +232,3 @@ write notes, or perform OmegaFlow actions.
 - The UI identifies the workflow that caused every alert.
 - AI disabled/unavailable produces no functional degradation.
 - Network inspection confirms that automated OmegaFlow traffic is read-only.
-
