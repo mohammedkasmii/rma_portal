@@ -59,9 +59,23 @@ RUN chmod 0755 /opt/rma-poc/bin/*.sh
 
 # The Camoufox browser build lives in the image, in the non-root user's cache.
 USER pocuser
-RUN camoufox fetch ${CAMOUFOX_BROWSER_SPEC} \
-    && camoufox version \
-    && python -c "import camoufox, playwright; print('camoufox pkg', camoufox.__file__)"
+RUN set -eu; \
+    attempt=1; \
+    while [ "$attempt" -le 5 ]; do \
+        echo "Camoufox fetch attempt ${attempt}/5"; \
+        if camoufox fetch ${CAMOUFOX_BROWSER_SPEC} \
+            && python -c "from camoufox.pkgman import launch_path; print('camoufox executable', launch_path())"; then \
+            break; \
+        fi; \
+        if [ "$attempt" -eq 5 ]; then \
+            echo "Camoufox browser was not installed after 5 attempts" >&2; \
+            exit 1; \
+        fi; \
+        attempt=$((attempt + 1)); \
+        sleep 5; \
+    done; \
+    camoufox version; \
+    python -c "import camoufox, playwright; print('camoufox pkg', camoufox.__file__)"
 
 WORKDIR /home/pocuser
 EXPOSE 6080
