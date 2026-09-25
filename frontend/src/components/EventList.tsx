@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 import type { EventOut } from "../api/types";
-import { EVENT_LABELS, formatDateTime } from "../labels";
+import { EVENT_LABELS, formatWhen } from "../labels";
 import { ClassBadge } from "./Badges";
 
 interface Props {
@@ -11,7 +11,7 @@ interface Props {
 
 /** Activity feed / timeline. Class is shown as icon + word, and informational events are quieter. */
 export function EventList({ events, showDossier = true, empty = "Aucune activité récente." }: Props) {
-  if (events.length === 0) return <p className="empty">{empty}</p>;
+  if (events.length === 0) return <p className="list-empty">{empty}</p>;
   return (
     <ol className="events">
       {events.map((event) => (
@@ -19,14 +19,14 @@ export function EventList({ events, showDossier = true, empty = "Aucune activit�
           <div className="event-head">
             <ClassBadge value={event.notification_class} />
             <strong>{EVENT_LABELS[event.kind] ?? event.kind}</strong>
-            <time dateTime={event.detected_at}>{formatDateTime(event.detected_at)}</time>
+            <time dateTime={event.detected_at}>{formatWhen(event.detected_at)}</time>
           </div>
           <div className="event-body">
             {event.workflow_name && <span>{event.workflow_name}</span>}
             {showDossier && event.dossier_id && (
               <span>
                 {" · "}
-                <Link to={`/dossiers/${event.dossier_id}`}>
+                <Link to={`/dossiers/${event.dossier_id}`} className="mono">
                   {event.dossier_number || `Dossier ${event.dossier_id}`}
                 </Link>
                 {event.insured_name ? ` — ${event.insured_name}` : ""}

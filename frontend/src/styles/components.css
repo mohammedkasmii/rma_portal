@@ -198,3 +198,27 @@ textarea.input { height: auto; padding: 10px 12px; line-height: 20px; resize: ve
 .fact { display: grid; grid-template-columns: 140px minmax(0, 1fr); gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--border); font-size: 13.5px; line-height: 18px; }
 .fact dt { color: var(--text-3); }
 .fact dd { margin: 0; overflow-wrap: anywhere; }
+
+/* Generic badges (queue class, reading status, configuration certainty) */
+.badge {
+  display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 8px; border-radius: var(--radius-pill);
+  font: 600 12px/1 var(--font); white-space: nowrap; background: var(--surface-3); color: var(--text-2);
+}
+.badge-neutral { background: var(--surface-3); color: var(--text-2); }
+.badge-class-action { background: var(--mod-bg); color: var(--mod-fg); }
+.badge-class-informational { background: var(--accent-soft); color: var(--accent-text); }
+.badge-class-silent { background: var(--surface-3); color: var(--text-2); }
+.badge-warn { background: var(--warn-soft); color: var(--warn-fg); }
+.badge-ok { background: var(--ok-soft); color: var(--ok); }
+.badge-danger { background: var(--danger-soft); color: var(--danger-fg); }
+
+/* Activity feed */
+.events { display: flex; flex-direction: column; }
+.event { padding: 10px var(--space-4); border-bottom: 1px solid var(--border); border-left: 3px solid transparent; }
+.event:last-child { border-bottom: 0; }
+.event-action { border-left-color: var(--mod-fg); }
+.event-informational { border-left-color: var(--accent); }
+.event-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); font-size: 13px; }
+.event-head time { margin-left: auto; color: var(--text-3); font-size: 12px; font-variant-numeric: tabular-nums; }
+.event-body { margin-top: 4px; font-size: 13px; color: var(--text-2); }
+.list-empty { padding: var(--space-4); color: var(--text-3); font-size: 13.5px; }

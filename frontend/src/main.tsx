@@ -10,6 +10,7 @@ import "./styles/tokens.css";
 import "./styles/base.css";
 import "./styles/components.css";
 import "./styles/shell.css";
+import "./styles/pages.css";
 import "./styles.css";
 
 const client = new QueryClient({

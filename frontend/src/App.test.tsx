@@ -22,7 +22,7 @@ describe("routing and roles", () => {
   it("sends an anonymous visitor to the login form", async () => {
     server(null);
     renderApp(<App />, "/");
-    expect(await screen.findByRole("heading", { name: "Portail RMA" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Connexion" })).toBeInTheDocument();
     expect(screen.getByLabelText("Identifiant")).toBeInTheDocument();
     expect(screen.getByTestId("location")).toHaveTextContent("/login");
   });

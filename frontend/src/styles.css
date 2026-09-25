@@ -27,61 +27,17 @@ button.primary, .button.primary { background: var(--primary); color: var(--prima
 .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; margin-top: 0.75rem; }
 .error { color: var(--danger); }
 .ok { color: var(--ok); }
-.empty { color: var(--muted); font-style: italic; }
 .banner { padding: 0.75rem 1rem; border-radius: var(--radius); margin-bottom: 1rem; border: 1px solid var(--border); }
 .banner-warning { background: var(--warn-bg); color: var(--warn); }
 .banner-info { background: var(--info-bg); color: var(--info); }
 
-.badge {
-  display: inline-flex; align-items: center; gap: 0.25rem; padding: 0.05rem 0.5rem; border-radius: 999px;
-  font-size: 0.78rem; font-weight: 600; border: 1px solid var(--border); background: var(--bg); white-space: nowrap;
-}
-.badge-class-action { background: var(--action-bg); color: var(--action); border-color: var(--action); }
-.badge-class-informational { background: var(--info-bg); color: var(--info); border-style: dashed; border-color: var(--info); }
-.badge-rules-capture_derived, .badge-rules-unconfirmed { background: var(--warn-bg); color: var(--warn); border-color: var(--warn); }
-.badge-unread { background: var(--primary); color: var(--primary-text); border-color: var(--primary); }
-.badge-poll-complete { background: var(--ok-bg); color: var(--ok); }
-.badge-poll-partial { background: var(--warn-bg); color: var(--warn); }
-.badge-poll-failed, .badge-poll-auth_required { background: var(--danger-bg); color: var(--danger); }
-.badge-work-done { background: var(--ok-bg); color: var(--ok); }
 .badges { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; }
-.count {
-  display: inline-block; min-width: 1.4rem; text-align: center; padding: 0 0.4rem; border-radius: 999px;
-  background: var(--primary); color: var(--primary-text); font-size: 0.75rem; font-weight: 700;
-}
-.sidebar a[aria-current="page"] .count { background: var(--primary-text); color: var(--primary); }
-
 .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
-table { border-collapse: collapse; width: 100%; }
 th, td { text-align: left; padding: 0.5rem 0.7rem; border-bottom: 1px solid var(--border); vertical-align: top; }
-thead th { background: var(--bg); position: sticky; top: 0; }
-.row-unread { background: var(--info-bg); }
+thead th { background: var(--surface-2); }
+.row-unread { background: var(--accent-soft); }
 .stack { display: flex; flex-direction: column; gap: 0.2rem; }
 .pagination { display: flex; align-items: center; gap: 1rem; margin: 1rem 0; }
-.result-count { color: var(--muted); }
-.work-status { display: flex; flex-direction: column; gap: 0.25rem; }
-.work-status label { font-size: 0.8rem; color: var(--muted); }
-.status-message { min-height: 1.2em; font-size: 0.85rem; }
-
 .tabs { display: flex; flex-wrap: wrap; gap: 0.25rem; border-bottom: 2px solid var(--border); }
-.tabs [role="tab"] { border-radius: var(--radius) var(--radius) 0 0; border-bottom: 0; display: inline-flex; gap: 0.4rem; align-items: center; }
-.tabs [aria-selected="true"] { background: var(--primary); color: var(--primary-text); border-color: var(--primary); }
-
-.events { list-style: none; padding: 0; margin: 0; display: grid; gap: 0.5rem; }
-.event { padding: 0.5rem 0.75rem; border-radius: var(--radius); background: var(--surface); border: 1px solid var(--border); border-left-width: 5px; }
-.event-action { border-left-color: var(--action); }
-.event-informational { border-left-color: var(--info); border-left-style: dashed; opacity: 0.92; }
-.event-head { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
-.event-head time { margin-left: auto; color: var(--muted); font-size: 0.85rem; }
-.event-body { font-size: 0.9rem; color: var(--muted); }
+.tabs [aria-selected="true"] { background: var(--primary); color: var(--primary-text); }
 .notes { list-style: none; padding: 0; }
-.hits { padding-left: 1.2rem; }
-
-@media (max-width: 860px) {
-  .facts { grid-template-columns: 1fr; }
-  table, thead, tbody, tr, th, td { display: block; }
-  thead { position: absolute; left: -9999px; }
-  tr { border-bottom: 2px solid var(--border); padding: 0.4rem 0; }
-  td[data-label]::before { content: attr(data-label) " : "; font-weight: 600; color: var(--muted); }
-  td, th { border: 0; padding: 0.2rem 0.7rem; }
-}

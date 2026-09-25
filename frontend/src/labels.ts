@@ -73,3 +73,14 @@ const timeFmt = new Intl.DateTimeFormat("fr-FR", { hour: "2-digit", minute: "2-d
 export function formatTime(value: string | null | undefined): string {
   return value ? timeFmt.format(new Date(value)) : "—";
 }
+
+/** Compact timestamp for lists: time today, "Hier HH:MM", otherwise the short date. */
+export function formatWhen(value: string | null | undefined, now: Date = new Date()): string {
+  if (!value) return "—";
+  const date = new Date(value);
+  const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const days = Math.round((startOfDay(now) - startOfDay(date)) / 86_400_000);
+  if (days === 0) return formatTime(value);
+  if (days === 1) return `Hier ${formatTime(value)}`;
+  return new Intl.DateTimeFormat("fr-FR", { day: "2-digit", month: "2-digit" }).format(date);
+}
