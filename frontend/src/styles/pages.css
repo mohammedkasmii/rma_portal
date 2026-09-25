@@ -105,16 +105,16 @@ li:last-child > .busy-row { border-bottom: 0; }
 
 table.items { font-size: 13px; line-height: 18px; }
 table.items th {
-  position: sticky; top: 0; z-index: 1; height: 38px; padding: 0 var(--space-3); background: var(--surface-2); border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; z-index: 1; height: 38px; padding: 0 10px; background: var(--surface-2); border-bottom: 1px solid var(--border);
   text-align: left; font: 600 12px/1 var(--font); color: var(--text-2); white-space: nowrap;
 }
-table.items td { height: var(--row-h); padding: 6px var(--space-3); border-bottom: 1px solid var(--border); vertical-align: middle; }
+table.items td { height: var(--row-h); padding: 6px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
 table.items tbody tr { cursor: pointer; }
 table.items tbody tr:hover { background: var(--surface-2); }
 table.items tr.row-unread { background: var(--accent-soft); }
 table.items tr.row-unread:hover { background: color-mix(in oklab, var(--accent-soft) 80%, var(--surface-2)); }
 table.items tr.row-selected { box-shadow: inset 3px 0 0 var(--accent); }
-table.items tr.row-unread .row-link, table.items tr.row-unread .row-sub { font-weight: 600; }
+table.items tr.row-unread .row-link, table.items tr.row-unread .col-main .row-sub { font-weight: 600; }
 .col-dot { width: 28px; padding-right: 0 !important; }
 .col-main { min-width: 190px; }
 .col-immat { white-space: nowrap; }
@@ -127,7 +127,7 @@ table.items tr.row-unread .row-link, table.items tr.row-unread .row-sub { font-w
 .row-link { border: 0; background: none; padding: 0; text-align: left; color: var(--text); font-size: 13px; line-height: 1.1; }
 .row-link:hover { color: var(--accent-text); text-decoration: underline; }
 .row-sub { color: var(--text-2); font-size: 12.5px; line-height: 1.2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
-.clamp { display: block; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.clamp { display: block; max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .change-line { display: flex; align-items: center; gap: var(--space-2); white-space: nowrap; }
 .sort-btn { display: inline-flex; align-items: center; gap: 4px; border: 0; background: none; padding: 0; color: inherit; font: inherit; }
 .sort-btn[data-active] { color: var(--text); }
@@ -143,6 +143,7 @@ tr:hover .row-actions, .row-actions:focus-within, tr.row-selected .row-actions {
 }
 @media (max-width: 1439px) {
   .col-date-inline { display: block; }
+  .col-extra { display: none; }
 }
 @media (hover: none) {
   .row-actions { opacity: 1; }
@@ -255,7 +256,8 @@ tr:hover .row-actions, .row-actions:focus-within, tr.row-selected .row-actions {
 .action-bar-row .btn { height: 44px; }
 .disclosure { padding: var(--space-3) var(--space-4); }
 .disclosure summary { cursor: pointer; font-weight: 600; }
-.facts-single { grid-template-columns: 1fr; padding: var(--space-2) 0 0; }
+.facts-single { grid-template-columns: 1fr; }
+.disclosure .facts { padding-inline: 0; }
 .disclosure-error { margin-top: var(--space-2); font-size: 13px; }
 
 @media (max-width: 1279px) {
@@ -277,6 +279,7 @@ tr:hover .row-actions, .row-actions:focus-within, tr.row-selected .row-actions {
   .key-label { margin-bottom: 0; font-size: 13.5px; }
   .key-sub { display: none; }
   .status-row-label { width: 100%; }
+  .status-row .status-control { width: 100%; }
   .segmented { flex-wrap: wrap; width: 100%; }
   .segmented-option { height: 44px; flex: 1 1 45%; justify-content: center; }
   .facts { grid-template-columns: 1fr; }
@@ -323,3 +326,7 @@ tr:hover .row-actions, .row-actions:focus-within, tr.row-selected .row-actions {
   .user-form-grid { grid-template-columns: minmax(0, 1fr); }
   .actions-row .btn { width: 100%; }
 }
+
+/* With the preview open the list gives up its secondary columns */
+.list-layout-preview .col-date, .list-layout-preview .col-extra, .list-layout-preview .col-file { display: none; }
+.list-layout-preview .col-date-inline { display: block; }

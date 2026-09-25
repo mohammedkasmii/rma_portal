@@ -66,17 +66,20 @@ Declared as CSS variables in `src/styles/tokens.css` on `:root` (light, default)
 - Theme: `data-theme` on `<html>`; preference `light | dark | system` stored in `localStorage`
   (`rma-theme`), default **light**. `public/theme-init.js` (same origin, CSP-safe) applies it before first paint.
 
-## 4. Shared components
+## 4. Shared components (as built)
 
-`src/components/ui/`: `Button` (primary/secondary/ghost/danger/icon, md/lg), `TreatmentStatusPill`,
-`TreatmentStatusControl` (segmented / select), `OmegaFlowStatusTag`, `ChangeMarker`, `CountBadge`,
-`FilterChip` (quick / facet), `SyncBanner`, `Toast` (+ provider), `EmptyState`, `ErrorState`,
-`Skeleton`, `ThemeSelector`, `PageHeader`, `TextField`, `SelectField`, `Toggle`, `Icon` re-exports
-from `lucide-react`. Hooks: `useDebouncedValue`, `useMediaQuery`, `useTheme`.
+`src/components/ui/`: `Button` (+ `buttonClass` for link-styled buttons), `Badges` (`TreatmentStatusPill`,
+`OmegaFlowStatusTag`, `ChangeMarker`, `CountBadge`), `TreatmentStatusControl` (segmented radio group on
+the dossier, styled select in lists/preview; optimistic, 409-aware, undo toast), `Filters` (`FilterChip`
+quick, `FacetSelect` combinable), `SyncBanner`, `Toast` (+ provider), `States` (`EmptyState`, `ErrorState`,
+`Skeleton`, delayed `DelayedSkeleton`), `ThemeSelector`, `PageHeader`, `Form` (`TextField`, `SelectField`,
+`Toggle`). Icons: `lucide-react` SVG components only. Hooks: `useDebouncedValue`, `useMediaQuery`,
+`useOpenItem`; `theme.tsx` (`ThemeProvider`, `useTheme`); `syncStatus.ts` (freshness from `/dashboard`).
 
-Shell: `AppShell`, `Sidebar`, `Topbar`, `GlobalSearch`. Lists: `ItemsBrowser`, `ItemsTable`,
-`DossierCard` (mobile), `DossierPreviewPanel` (≥ 1280 px, File page). Dossier: `NotesPanel`,
-`ChangeSummary`. Every semantic state carries text or an icon in addition to colour.
+Shell (`components/shell/`): `AppShell`, `Sidebar`, `Topbar`, `GlobalSearch`. Lists: `ItemsBrowser`,
+`ItemsTable` (plain semantic table), `DossierCards` (phones), `DossierPreviewPanel`, `StatusTabs`.
+Dossier: `NotesPanel`. Legacy `Badges.tsx` keeps the class/reading/rules badges and `EventList` the feed.
+Admin screens live in `pages/admin/`. Styles: `styles/{tokens,base,components,shell,pages}.css`.
 
 ## 5. Responsive mapping [V]
 
@@ -117,3 +120,23 @@ panel is kept as is and restyled; nothing new is added) · vehicle model and old
 5. Dossier → `feat(frontend): dossier screen`
 6. Session, health, configuration, users → `feat(frontend): session and administration screens`
 7. Responsive/accessibility polish, docs update → `feat(frontend): responsive and accessibility refinements`
+
+## 9. Decisions taken while building
+
+- The optional AI panel is kept exactly as it was (restyled only); no disabled « Bientôt disponible » entry was added because a working component already exists.
+- Treatment status stays editable from lists (styled select) as before; the preview panel is opened with an explicit eye button so that a row click keeps meaning « open and acknowledge ».
+- The dossier keeps its file tabs even with one file: choosing a tab is the explicit open that acknowledges (existing rule).
+- Employees see no sync alerts or reading details: the neutral banner only. Administrators get the alert with « Reconnecter » and the « Détails de lecture » disclosure on queue pages.
+- « Ce qui a changé » lists recorded events (kind + changed field labels). The API has no old → new values, so none are shown.
+- Table library removed (`@tanstack/react-table`): the API already sorts and paginates.
+- Row-level 1–4 status shortcuts, `g a` / `g t`, « Colonnes », density and pull-to-refresh are not built (§7).
+
+## 10. Validation (Stage A)
+
+Run from `frontend/` unless noted: `npm run lint`, `npm run typecheck`, `npm test` (74 tests),
+`npm run build`; `uv run pytest tests/web` (87 passed, API compatibility); `docker compose -f
+compose.prod.yaml config -q` (with placeholder secrets). Visual checks used a local synthetic mock API
+at 1440×900, 1280×720, 1024×768 and 390×844 in light and dark; an automated axe-core pass
+(WCAG 2 A/AA incl. contrast) reported no violation on any screen in either theme. Still to check live:
+real queue volumes and column widths, the noVNC reconnect link, and the reading of real OmegaFlow
+status values.
