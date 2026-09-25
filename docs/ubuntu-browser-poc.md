@@ -97,6 +97,28 @@ $C down --volumes
 docker volume ls --filter name=rma-poc            # should list nothing
 ```
 
+## Agency validation checklist
+
+```bash
+cd <repo> && git pull
+export POC_VNC_PASSWORD='...'; C="docker compose -f compose.poc.yaml"
+$C build && $C up -d
+```
+
+| # | Step | Command | Expect |
+|---|---|---|---|
+| 1 | Doctor | `$C exec -T rma-poc-browser python -m rma_poc doctor; echo $?` | exit 0, `RESULT=READY` (403 from OmegaFlow to plain HTTP is fine) |
+| 2 | Login | `$C exec rma-poc-browser python -m rma_poc login` | log in via noVNC; `RESULT=CAPTURED`, exit 0 |
+| 3 | Status | `$C exec -T rma-poc-browser python -m rma_poc status` | state present, counts > 0 |
+| 4 | Verify | `$C exec -T rma-poc-browser python -m rma_poc verify; echo $?` | `RESULT=READY`, exit 0 |
+| 5 | Verify, clean profile | `$C exec -T rma-poc-browser python -m rma_poc verify --fresh-profile; echo $?` | exit 0 |
+| 6 | Recreate | `$C up -d --force-recreate`, then steps 1, 3, 4 | still READY |
+| 7 | Server reboot | `sudo reboot`; re-export the password; steps 1, 3, 4 | still READY |
+
+Logs: `$C logs --tail 100` and
+`$C exec rma-poc-browser tail -n 200 /var/lib/rma-poc/state/logs/poc.log`
+(`grep stage= ` for timings). `doctor` and the health check never launch a browser.
+
 ## Exit codes / `RESULT=` line
 
 | Code | Result | Commands |
@@ -107,6 +129,7 @@ docker volume ls --filter name=rma-poc            # should list nothing
 | 20 | `TIMEOUT` | login, verify |
 | 21 | `BROWSER_ERROR` | login, verify |
 | 22 | `CAPTURE_FAILED` (saved state untouched) | login |
+| 40 | `NOT_READY` (infrastructure not ready) | doctor |
 | 30 | `PROFILE_BUSY` (another command holds the profile lock) | login, verify |
 | 2 | `USAGE` (e.g. no `DISPLAY`) | login |
 
@@ -125,10 +148,13 @@ docker volume ls --filter name=rma-poc            # should list nothing
 - **Logging:** stage names, exit reasons, exception *types*, and counts only.
 - **Config env (compose):** `POC_OMEGAFLOW_BASE_URL`, `POC_OMEGAFLOW_START_ROUTE`,
   `POC_LOCALE`, `POC_TIMEZONE`, `POC_SCREEN`.
-- **Freeze the browser build:** after the first build, put the version printed
-  by `camoufox version` into the `CAMOUFOX_BROWSER_SPEC` build arg in
-  `docker/poc-browser/Dockerfile` (empty = newest build the locked
-  camoufox 0.5.6 / playwright 1.62 pair accepts, minimum `beta.30`).
+- **Browser build:** pinned in `docker/poc-browser/Dockerfile` as
+  `CAMOUFOX_BROWSER_SPEC=official/152.0.4-beta.31`.
+- **Health check:** healthy only if the X display, x11vnc, the noVNC page and the
+  Camoufox executable all check out (no browser is launched).
+- **Stage timing:** logs contain `stage=<name> outcome=<...> elapsed_ms=<n>` for
+  `browser_startup`, `initial_navigation`, `auth_wait`, `session_capture`,
+  `verify_navigation`, `verify_auth_wait`, `browser_cleanup`.
 
 ## Troubleshooting
 

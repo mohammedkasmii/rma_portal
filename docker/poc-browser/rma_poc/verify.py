@@ -25,7 +25,7 @@ from rma_portal.infrastructure.portal.session_state import (
     restore_session_state,
 )
 
-from .common import BrowserSession, ExitCode, PocConfig
+from .common import BrowserSession, ExitCode, PocConfig, timed_stage
 
 logger = logging.getLogger("rma_poc.verify")
 
@@ -59,10 +59,14 @@ async def _verify(cfg: PocConfig, profile_dir: Path, timeout_s: float) -> ExitCo
         context = session.context
         await restore_session_state(context, state, origin=origin_of(cfg.base_url))
         page = context.pages[0] if context.pages else await context.new_page()
-        await page.goto(
-            cfg.start_route, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS
-        )
-        return await _poll_for_result(page, deadline)
+        with timed_stage("verify_navigation"):
+            await page.goto(
+                cfg.start_route, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS
+            )
+        with timed_stage("verify_auth_wait") as stage:
+            result = await _poll_for_result(page, deadline)
+            stage.outcome = result.name
+        return result
 
 
 async def run_verify(cfg: PocConfig, *, timeout_s: float, fresh_profile: bool) -> ExitCode:

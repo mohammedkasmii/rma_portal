@@ -26,7 +26,7 @@ from rma_portal.infrastructure.portal.session_state import (
     save_session_state,
 )
 
-from .common import BrowserSession, ExitCode, PocConfig, context_closed
+from .common import BrowserSession, ExitCode, PocConfig, context_closed, timed_stage
 
 logger = logging.getLogger("rma_poc.login")
 
@@ -120,12 +120,17 @@ async def run_login(cfg: PocConfig, *, timeout_s: float) -> ExitCode:
             async with BrowserSession(cfg, headless=False, profile_dir=cfg.profile_dir) as session:
                 context = session.context
                 page = context.pages[0] if context.pages else await context.new_page()
-                await page.goto(cfg.start_route, wait_until="domcontentloaded", timeout=60_000)
+                with timed_stage("initial_navigation"):
+                    await page.goto(cfg.start_route, wait_until="domcontentloaded", timeout=60_000)
                 logger.info(
                     "visible browser open; log in via noVNC (waiting up to %.0fs)", timeout_s
                 )
 
-                outcome = await wait_for_authentication(context, timeout_s)
+                with timed_stage("auth_wait") as stage:
+                    outcome = await wait_for_authentication(context, timeout_s)
+                    stage.outcome = (
+                        outcome.name if isinstance(outcome, ExitCode) else "AUTHENTICATED"
+                    )
                 if isinstance(outcome, ExitCode):
                     logger.warning(
                         "login not completed: %s (saved state left untouched)", outcome.name
@@ -133,7 +138,8 @@ async def run_login(cfg: PocConfig, *, timeout_s: float) -> ExitCode:
                     return outcome
 
                 try:
-                    counts = await capture_and_save(context, outcome, cfg)
+                    with timed_stage("session_capture"):
+                        counts = await capture_and_save(context, outcome, cfg)
                 except CaptureError as exc:
                     logger.error("session capture refused: %s (saved state left untouched)", exc)
                     return ExitCode.CAPTURE_FAILED

@@ -13,6 +13,9 @@ import logging.handlers
 import os
 import signal
 import sys
+import time
+from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import IntEnum
 from pathlib import Path
@@ -40,6 +43,7 @@ class ExitCode(IntEnum):
     BROWSER_ERROR = 21  # browser failed to start, crashed or errored
     CAPTURE_FAILED = 22  # authenticated, but state could not be captured/saved
     PROFILE_BUSY = 30  # another command holds the browser profile lock
+    NOT_READY = 40  # doctor: infrastructure is not ready
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +75,38 @@ class PocConfig:
             state_path=root / "state" / "omegaflow-session-state.json",
             lock_path=root / "state" / "browser-profile.lock",
             log_path=root / "state" / "logs" / "poc.log",
+        )
+
+
+class Stage:
+    """Lets the wrapped block override the logged outcome (default ``OK``)."""
+
+    outcome = "OK"
+
+
+@contextmanager
+def timed_stage(name: str) -> Generator[Stage]:
+    """Logs ``stage=<name> outcome=<...> elapsed_ms=<n>`` when the block ends.
+
+    Only the stage name, an outcome word and milliseconds are logged -- never
+    URLs, cookie/storage names or values, or exception messages.
+    """
+    stage = Stage()
+    started = time.perf_counter()
+    try:
+        yield stage
+    except asyncio.CancelledError:
+        stage.outcome = "CANCELLED"
+        raise
+    except BaseException as exc:
+        stage.outcome = f"FAILED({type(exc).__name__})"
+        raise
+    finally:
+        logger.info(
+            "stage=%s outcome=%s elapsed_ms=%.0f",
+            name,
+            stage.outcome,
+            (time.perf_counter() - started) * 1000,
         )
 
 
@@ -163,23 +199,24 @@ class BrowserSession:
     async def __aenter__(self) -> BrowserSession:
         self._profile_dir.mkdir(parents=True, exist_ok=True)
         extra: dict[str, Any] = {} if self._headless else {"window": self._cfg.window}
-        self._manager = AsyncCamoufox(
-            persistent_context=True,
-            user_data_dir=str(self._profile_dir),
-            headless=self._headless,
-            os=self._cfg.camoufox_os,
-            geoip=False,
-            exclude_addons=[DefaultAddons.UBO],
-            locale=self._cfg.locale,
-            timezone_id=self._cfg.timezone_id,
-            firefox_user_prefs={"network.cookie.cookieBehavior": 4},
-            **extra,
-        )
         try:
-            self.context = await asyncio.wait_for(
-                self._manager.__aenter__(), timeout=STARTUP_TIMEOUT_SECONDS
-            )
-            await self.context.route("**/*", self.guard.route)
+            with timed_stage("browser_startup"):
+                self._manager = AsyncCamoufox(
+                    persistent_context=True,
+                    user_data_dir=str(self._profile_dir),
+                    headless=self._headless,
+                    os=self._cfg.camoufox_os,
+                    geoip=False,
+                    exclude_addons=[DefaultAddons.UBO],
+                    locale=self._cfg.locale,
+                    timezone_id=self._cfg.timezone_id,
+                    firefox_user_prefs={"network.cookie.cookieBehavior": 4},
+                    **extra,
+                )
+                self.context = await asyncio.wait_for(
+                    self._manager.__aenter__(), timeout=STARTUP_TIMEOUT_SECONDS
+                )
+                await self.context.route("**/*", self.guard.route)
         except BaseException:
             await self._close()
             raise
@@ -198,19 +235,22 @@ class BrowserSession:
         if manager is None:
             return
         try:
-            await asyncio.wait_for(
-                manager.__aexit__(None, None, None), timeout=CLOSE_TIMEOUT_SECONDS
-            )
-        except BaseException as exc:  # noqa: BLE001 - bounded cleanup must never propagate
-            killed = kill_descendants()
-            self.cleanup_forced = True
-            logger.warning(
-                "browser close not confirmed (%s); killed %d child processes",
-                type(exc).__name__,
-                killed,
-            )
-            if isinstance(exc, asyncio.CancelledError):
-                raise
+            with timed_stage("browser_cleanup") as stage:
+                try:
+                    await asyncio.wait_for(
+                        manager.__aexit__(None, None, None), timeout=CLOSE_TIMEOUT_SECONDS
+                    )
+                except BaseException as exc:  # noqa: BLE001 - bounded cleanup never propagates
+                    killed = kill_descendants()
+                    self.cleanup_forced = True
+                    stage.outcome = "FORCED_KILL"
+                    logger.warning(
+                        "browser close not confirmed (%s); killed %d child processes",
+                        type(exc).__name__,
+                        killed,
+                    )
+                    if isinstance(exc, asyncio.CancelledError):
+                        raise
         finally:
             self.context = None
             if self.guard.blocked_write_attempts:

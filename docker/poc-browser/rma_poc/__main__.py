@@ -17,6 +17,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from rma_portal.infrastructure.portal.session_state import load_session_state
 
 from .common import ExitCode, PocConfig, configure_logging
+from .doctor import collect_checks, ready
 from .login import run_login
 from .verify import run_verify
 
@@ -46,6 +47,15 @@ def _status(cfg: PocConfig) -> ExitCode:
     return ExitCode.OK if state is not None else ExitCode.AUTH_REQUIRED
 
 
+def _doctor(cfg: PocConfig) -> ExitCode:
+    checks = collect_checks(
+        base_url=cfg.base_url, profile_dir=cfg.profile_dir, state_path=cfg.state_path
+    )
+    for check in checks:
+        print(check.line())
+    return ExitCode.OK if ready(checks) else ExitCode.NOT_READY
+
+
 async def _guarded(coro, overall_timeout_s: float) -> ExitCode:
     try:
         return await asyncio.wait_for(coro, timeout=overall_timeout_s)
@@ -70,6 +80,7 @@ def main(argv: list[str] | None = None) -> int:
         help="use a throw-away browser profile (proves the state file alone suffices)",
     )
     sub.add_parser("status", help="count-only summary of the saved state")
+    sub.add_parser("doctor", help="read-only infrastructure diagnostics (no browser launch)")
     args = parser.parse_args(argv)
 
     cfg = PocConfig.from_env()
@@ -77,6 +88,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "status":
         code = _status(cfg)
+    elif args.command == "doctor":
+        code = _doctor(cfg)
     elif args.command == "login":
         code = asyncio.run(
             _guarded(run_login(cfg, timeout_s=args.timeout), args.timeout + _OVERALL_GRACE_SECONDS)
@@ -89,7 +102,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
 
-    ok_names = {"login": "CAPTURED", "verify": "READY", "status": "PRESENT"}
+    ok_names = {"login": "CAPTURED", "verify": "READY", "status": "PRESENT", "doctor": "READY"}
     print(f"RESULT={ok_names[args.command] if code is ExitCode.OK else code.name}")
     return int(code)
 

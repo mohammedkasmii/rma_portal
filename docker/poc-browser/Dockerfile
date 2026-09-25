@@ -5,10 +5,9 @@
 FROM ubuntu:26.04@sha256:da6fc2be547864451aa253836dd926da33623312df4a9a243e35dc877c378a78
 
 ARG UV_VERSION=0.11
-# Empty = `camoufox fetch` picks the newest browser build this camoufox/playwright
-# pair supports. After the first successful build, copy the build/version printed
-# by the "camoufox version" step into this arg to freeze it (see docs).
-ARG CAMOUFOX_BROWSER_SPEC=
+# Pinned Camoufox browser build (`camoufox fetch <spec>`); override with
+# --build-arg only to test another build.
+ARG CAMOUFOX_BROWSER_SPEC=official/152.0.4-beta.31
 ARG POC_UID=10001
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -79,6 +78,6 @@ RUN set -eu; \
 
 WORKDIR /home/pocuser
 EXPOSE 6080
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
     CMD ["/opt/rma-poc/bin/healthcheck.sh"]
 ENTRYPOINT ["/opt/rma-poc/bin/entrypoint.sh"]
