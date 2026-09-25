@@ -51,12 +51,8 @@ RUN uv python install 3.14 \
     && uv sync --frozen --no-dev \
     && chmod -R a+rX /opt/python /opt/venv /app
 
-COPY docker/poc-browser/rma_poc /opt/rma-poc/rma_poc
-COPY docker/poc-browser/supervisord.conf /etc/rma-poc/supervisord.conf
-COPY docker/poc-browser/entrypoint.sh docker/poc-browser/healthcheck.sh docker/poc-browser/wait-for-x.sh /opt/rma-poc/bin/
-RUN chmod 0755 /opt/rma-poc/bin/*.sh
-
-# The Camoufox browser build lives in the image, in the non-root user's cache.
+# Keep the expensive browser download ahead of the frequently changed PoC
+# sources and scripts so those edits continue to reuse this layer.
 USER pocuser
 RUN set -eu; \
     attempt=1; \
@@ -76,6 +72,13 @@ RUN set -eu; \
     camoufox version; \
     python -c "import camoufox, playwright; print('camoufox pkg', camoufox.__file__)"
 
+USER root
+COPY docker/poc-browser/rma_poc /opt/rma-poc/rma_poc
+COPY docker/poc-browser/supervisord.conf /etc/rma-poc/supervisord.conf
+COPY docker/poc-browser/entrypoint.sh docker/poc-browser/healthcheck.sh docker/poc-browser/wait-for-x.sh /opt/rma-poc/bin/
+RUN chmod 0755 /opt/rma-poc/bin/*.sh
+
+USER pocuser
 WORKDIR /home/pocuser
 EXPOSE 6080
 HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
