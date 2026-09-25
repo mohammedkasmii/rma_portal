@@ -40,6 +40,3 @@ export function EventKind({ kind, cls }: { kind: string; cls: NotificationClass 
     </span>
   );
 }
-
-/** Transitional alias, removed once the list table uses ChangeMarker. */
-export { ChangeMarker as UnreadBadge } from "./ui/Badges";

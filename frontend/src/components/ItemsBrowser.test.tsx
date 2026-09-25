@@ -9,7 +9,7 @@ function api(items = [makeItem(), makeItem({ membership_id: 56, occurrence_id: 7
   return installFetch((call: Call) => {
     if (call.path === "/auth/me") return { json: employee };
     if (call.path === "/workflows") return { json: [makeWorkflow()] };
-    if (call.path.startsWith("/inbox")) return { json: makePage(items) };
+    if (call.path.startsWith("/inbox") || call.path.endsWith("/items") || call.path.includes("/items?")) return { json: makePage(items) };
     if (call.method === "POST" && call.path.startsWith("/occurrences/")) return { json: { acknowledged: 1 } };
     return undefined;
   });
@@ -23,6 +23,15 @@ function renderInbox(route = "/inbox") {
     </Routes>,
     route,
   );
+}
+
+function stubMedia(matching: string) {
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    matches: query.includes(matching),
+    media: query,
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+  }));
 }
 
 afterEach(() => vi.unstubAllGlobals());
@@ -87,7 +96,7 @@ describe("ItemsBrowser", () => {
     expect(first.path).toContain("page=2");
     expect(first.path).toContain("page_size=25");
 
-    await userEvent.selectOptions(screen.getByLabelText("Alertes"), "arrival");
+    await userEvent.click(screen.getByRole("button", { name: /^Nouveau/ }));
 
     await waitFor(() => {
       const url = screen.getByTestId("location").textContent!;
@@ -114,11 +123,124 @@ describe("ItemsBrowser", () => {
     await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("sort=name&order=asc"));
   });
 
-  it("shows the workflow's rules badge and class on each row", async () => {
+  it("keeps rows free of the validation badge and the notification class", async () => {
     api();
     renderInbox();
     await screen.findByText("D-100");
-    expect(screen.getAllByText("À valider sur site").length).toBeGreaterThan(0);
-    expect(screen.getAllByTestId("class-ACTION").length).toBeGreaterThan(0);
+    expect(screen.queryByText("À valider sur site")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("class-ACTION")).not.toBeInTheDocument();
+  });
+
+  it("waits for typing to pause before asking the server (debounced search)", async () => {
+    const calls = api();
+    renderInbox();
+    await screen.findByText("D-100");
+    const before = calls.filter((c) => c.path.startsWith("/inbox")).length;
+
+    await userEvent.type(screen.getByRole("searchbox", { name: "Filtrer la liste" }), "karim");
+
+    // Typed in one burst: no request is sent per character.
+    expect(calls.filter((c) => c.path.startsWith("/inbox")).length).toBe(before);
+    await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("search=karim"));
+    const searches = calls.filter((c) => c.path.includes("search="));
+    expect(searches.length).toBeGreaterThan(0);
+    expect(searches.every((c) => c.path.includes("search=karim"))).toBe(true);
+  });
+
+  it("offers quick views that exclude each other and a way to clear every filter", async () => {
+    api();
+    renderInbox("/inbox?unread=true&kind=changed&work_status=DONE");
+    await screen.findByText("D-100");
+
+    expect(screen.getByRole("button", { name: /^Modification/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /^Nouveau/ })).toHaveAttribute("aria-pressed", "false");
+
+    await userEvent.click(screen.getByRole("button", { name: "Effacer les filtres" }));
+
+    await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent(/^\/inbox$/));
+    expect(screen.queryByRole("button", { name: "Effacer les filtres" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Tous/ })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("explains an empty result caused by filters and lets the user clear them", async () => {
+    api([]);
+    renderInbox("/inbox?work_status=DONE");
+
+    expect(await screen.findByText("Aucun dossier ne correspond à ces critères")).toBeInTheDocument();
+    await userEvent.click(screen.getAllByRole("button", { name: "Effacer les filtres" })[0]);
+    await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent(/^\/inbox$/));
+  });
+
+  it("shows a neutral empty state when the list has nothing", async () => {
+    api([]);
+    renderInbox();
+    expect(await screen.findByText("Rien à traiter ici")).toBeInTheDocument();
+  });
+
+  it("shows an error state with a retry when the list cannot be loaded", async () => {
+    let attempts = 0;
+    installFetch((call: Call) => {
+      if (call.path === "/auth/me") return { json: employee };
+      if (call.path === "/workflows") return { json: [makeWorkflow()] };
+      if (call.path.startsWith("/inbox")) {
+        attempts += 1;
+        return attempts === 1 ? { status: 500, json: { detail: "Le serveur ne répond pas." } } : { json: makePage([makeItem()]) };
+      }
+      return undefined;
+    });
+    renderInbox();
+
+    expect(await screen.findByText("Impossible de charger la liste")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Réessayer" }));
+    expect(await screen.findByText("D-100")).toBeInTheDocument();
+  });
+
+  it("uses dossier cards instead of a table on a phone-sized screen", async () => {
+    stubMedia("max-width: 767px");
+    api();
+    renderInbox();
+
+    await screen.findByText("D-100");
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+    expect(screen.getByRole("list", { name: "Dossiers" })).toBeInTheDocument();
+  });
+
+  it("previews a queue row on wide screens without opening or acknowledging it", async () => {
+    stubMedia("min-width: 1280px");
+    const calls = api();
+    renderApp(
+      <Routes>
+        <Route path="/workflows/:key" element={<ItemsBrowser workflowKey="photos_pending" caption="File" />} />
+      </Routes>,
+      "/workflows/photos_pending",
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: "Aperçu du dossier D-100" }));
+
+    const panel = await screen.findByRole("complementary", { name: "Aperçu du dossier" });
+    expect(panel).toHaveTextContent("D-100");
+    expect(panel).toHaveTextContent("Ouvrir dans OmegaFlow");
+    expect(calls.some((c) => c.path.includes("/acknowledge"))).toBe(false);
+    await userEvent.click(screen.getByRole("button", { name: "Fermer l’aperçu" }));
+    expect(screen.queryByRole("complementary", { name: "Aperçu du dossier" })).not.toBeInTheDocument();
+  });
+
+  it("shows treatment-status tabs with the queue counts and filters by the selected one", async () => {
+    api();
+    renderApp(
+      <Routes>
+        <Route
+          path="/workflows/:key"
+          element={<ItemsBrowser workflowKey="photos_pending" caption="File" statusCounts={{ counts: { TO_DO: 5, DONE: 1 }, total: 9 }} />}
+        />
+      </Routes>,
+      "/workflows/photos_pending",
+    );
+
+    const tabs = await screen.findAllByRole("tab");
+    expect(tabs.map((tab) => tab.textContent)).toEqual(["Tous9", "À traiter5", "En cours0", "En attente0", "Terminé1"]);
+    await userEvent.click(screen.getByRole("tab", { name: /Terminé/ }));
+    await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("work_status=DONE"));
+    expect(screen.getByRole("tab", { name: /Terminé/ })).toHaveAttribute("aria-selected", "true");
   });
 });
