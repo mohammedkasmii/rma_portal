@@ -620,6 +620,30 @@ class WorkService:
             workflow_name=names.get(note.workflow_membership_id) if note.workflow_membership_id else None,
         )
 
+    def item_for_membership(self, user_id: int, membership_id: int) -> ItemView | None:
+        with self._uow_factory() as uow:
+            owner = uow.queries.membership_owner(membership_id)
+            if owner is None:
+                return None
+            records = uow.queries.inbox_records(user_id, dossier_id=owner[1], active_only=False)
+        record = next((r for r in records if r.membership_id == membership_id), None)
+        return self._item(record, self._clock()) if record else None
+
+    def item_for_occurrence(self, user_id: int, occurrence_id: int) -> ItemView | None:
+        """The item of the workflow an occurrence belongs to (its membership's current state)."""
+        with self._uow_factory() as uow:
+            owner = uow.queries.occurrence_owner(occurrence_id)
+            if owner is None:
+                return None
+            records = uow.queries.inbox_records(user_id, dossier_id=owner[1], active_only=False)
+        record = next((r for r in records if r.workflow_id == owner[0]), None)
+        return self._item(record, self._clock()) if record else None
+
+    def dossier_events(self, dossier_id: int, limit: int = 100) -> list[EventOut]:
+        with self._uow_factory() as uow:
+            events = uow.queries.events(limit=limit, dossier_id=dossier_id)
+        return [self._event_out(e) for e in events]
+
     # --- mutations (all explicit, all per-employee or shared as documented) ----------------------
 
     def acknowledge_occurrence(self, user_id: int, occurrence_id: int) -> int:

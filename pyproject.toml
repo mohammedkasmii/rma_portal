@@ -20,6 +20,8 @@ dependencies = [
     "filelock>=3.16",
     "beautifulsoup4>=4.12",
     "psycopg[binary]>=3.2",
+    "httpx>=0.27",
+    "pydantic>=2.7",
 ]
 
 [project.scripts]

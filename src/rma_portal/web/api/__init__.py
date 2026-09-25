@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from rma_portal.web.api import auth, operations, workspace
+from rma_portal.web.api import assistant, auth, operations, workspace
 
 router = APIRouter(prefix="/api/v1")
 
@@ -17,3 +17,5 @@ def health() -> dict[str, str]:
 router.include_router(auth.router)
 router.include_router(workspace.router)
 router.include_router(operations.router)
+router.include_router(assistant.router)
+router.include_router(assistant.dossier_router)

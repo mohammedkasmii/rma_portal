@@ -4,6 +4,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from rma_portal.application.accounts import AccountService
+from rma_portal.application.ai import AdvisorService
 from rma_portal.application.dossier_service import DossierService
 from rma_portal.application.outbox import OutboxProcessor
 from rma_portal.application.work_service import WorkService
@@ -43,16 +44,18 @@ def application(settings, uow_factory, portal_account_id, fake_open_and_wait) ->
         open_and_wait=fake_open_and_wait,
     )
     settings.session_secret = "test-secret-not-for-production"
+    work_service = WorkService(
+        uow_factory, default_catalog(), base_url="https://omegaflow.example", connect_url="https://vnc.example/"
+    )
     return Application(
         settings=settings,
         uow_factory=uow_factory,
         reader_factory=reader_factory,
         sync_service=sync_service,
         catalog_sync=WorkflowCatalogSync(uow_factory, default_catalog()),
-        work_service=WorkService(
-            uow_factory, default_catalog(), base_url="https://omegaflow.example", connect_url="https://vnc.example/"
-        ),
+        work_service=work_service,
         outbox_processor=OutboxProcessor(uow_factory, {}),
+        advisor_service=AdvisorService(uow_factory, work_service, None),
         account_service=account_service,
         dossier_service=dossier_service,
         session_connector=session_connector,

@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from rma_portal.application.accounts import AccountService
+from rma_portal.application.ai import AdvisorService, AiJobHandler
 from rma_portal.application.dossier_service import DossierService
 from rma_portal.application.outbox import OutboxProcessor, log_delivery
 from rma_portal.application.ports import PortalReaderFactory, UnitOfWorkFactory
@@ -18,6 +19,7 @@ from rma_portal.application.workflow_catalog_sync import WorkflowCatalogSync
 from rma_portal.application.workflow_sync import SyncWorkflows
 from rma_portal.config import Settings, load_settings
 from rma_portal.domain.enums import OutboxTopic, SyncTrigger
+from rma_portal.infrastructure.ai.ollama import build_advisor
 from rma_portal.infrastructure.db.models import Base
 from rma_portal.infrastructure.db.session import create_engine_for, create_session_factory
 from rma_portal.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWorkFactory
@@ -37,6 +39,7 @@ class Application:
     catalog_sync: WorkflowCatalogSync
     work_service: WorkService
     outbox_processor: OutboxProcessor
+    advisor_service: AdvisorService
     account_service: AccountService
     dossier_service: DossierService
     session_connector: SessionConnector
@@ -65,12 +68,19 @@ def build_application(settings: Settings | None = None) -> Application:
 
     catalog = default_catalog()
     catalog_sync = WorkflowCatalogSync(uow_factory, catalog)
+    advisor = build_advisor(
+        enabled=settings.ollama_enabled,
+        base_url=settings.ollama_base_url,
+        model=settings.ollama_model,
+        timeout_seconds=settings.ollama_timeout_seconds,
+    )
     sync_service = SyncWorkflows(
         reader_factory,
         uow_factory,
         catalog,
         timezone_id=settings.portal_timezone,
         max_detail_reads_per_cycle=settings.max_detail_reads_per_cycle,
+        ai_jobs_enabled=advisor is not None,
     )
     password_hasher = Argon2PasswordHasher()
     account_service = AccountService(uow_factory, password_hasher)
@@ -81,11 +91,13 @@ def build_application(settings: Settings | None = None) -> Application:
         timezone_id=settings.portal_timezone,
         connect_url=settings.novnc_url or None,
     )
+    advisor_service = AdvisorService(uow_factory, work_service, advisor)
     outbox_processor = OutboxProcessor(
         uow_factory,
         {
             OutboxTopic.NOTIFICATION_CREATED.value: log_delivery,
             OutboxTopic.WORKFLOW_EVENT_RECORDED.value: log_delivery,
+            OutboxTopic.AI_JOB_REQUESTED.value: AiJobHandler(advisor_service),
         },
     )
     dossier_service = DossierService(uow_factory)
@@ -113,6 +125,7 @@ def build_application(settings: Settings | None = None) -> Application:
         catalog_sync=catalog_sync,
         work_service=work_service,
         outbox_processor=outbox_processor,
+        advisor_service=advisor_service,
         account_service=account_service,
         dossier_service=dossier_service,
         session_connector=session_connector,

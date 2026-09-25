@@ -572,7 +572,11 @@ class SqlAlchemyAiRunRepository:
             status=run.status,
             started_at=run.started_at,
             duration_ms=run.duration_ms,
-            result_json=json.dumps(dict(run.result), sort_keys=True) if run.result is not None else None,
+            result_json=(
+                json.dumps(dict(run.result), sort_keys=True, ensure_ascii=False)
+                if run.result is not None
+                else None
+            ),
             error=run.error[:500] if run.error else None,
             created_by=run.created_by,
         )
