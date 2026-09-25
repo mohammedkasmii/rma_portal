@@ -36,7 +36,7 @@ RUN apt-get update \
         libpci3 libpulse0 libnss3 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=ghcr.io/astral-sh/uv:0.11 /uv /usr/local/bin/uv
+COPY --from=docker.io/astral/uv:0.11 /uv /usr/local/bin/uv
 
 RUN useradd --uid ${POC_UID} --create-home --home-dir /home/pocuser --shell /usr/sbin/nologin pocuser \
     && install -d -o pocuser -g pocuser \
