@@ -1,5 +1,16 @@
 # Architecture
 
+> **V2 (current).** The V2 platform (`docs/rma-platform-v2-implementation-plan.md`) supersedes the
+> single-queue/SQLite/Jinja description below where they conflict: `SyncWorkflows` reads every
+> catalogued workflow in one browser session with independent baselines and outcomes
+> (`domain/workflow_reconciliation.py` holds the notification policy); workflow occurrences,
+> per-membership work status, events and a transactional outbox live in PostgreSQL; the employee
+> client is the React app in `frontend/` consuming `/api/v1`; the API and the worker are separate
+> processes (`docs/ubuntu-production-runbook.md`); the optional local Ollama advisor sits behind
+> `application/ai.py` and can only read and write `ai_runs`. The pre-V2 Jinja pages still work on
+> the Garage agréé membership. Sections below describing dossier-scoped notifications, `poll_runs`
+> and `SyncAgreementQueue` are historical.
+
 RMA Portal is a SOLID modular monolith: the employee UI, the 5-minute
 scheduler, the read-only OmegaFlow adapter and the SQLite persistence layer
 all run in one Python process (Uvicorn, one worker). This keeps

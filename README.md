@@ -10,6 +10,16 @@ détails techniques et la fondation des prochains workflows.
 Le portail n'envoie, ne valide et ne supprime jamais d'information dans
 OmegaFlow.
 
+## Plateforme V2 (Ubuntu / Docker)
+
+Le déploiement de production (PostgreSQL, API, worker, frontend React, bureau noVNC) est décrit
+dans `docs/ubuntu-production-runbook.md` (`compose.prod.yaml`, `.env.example`, `scripts/prod/`).
+Commandes utiles : `rma-portal migrate`, `rma-portal worker`, `rma-portal import-sqlite --source <fichier>`.
+
+Vérifications locales : `uv run ruff check src tests alembic scripts`, `uv run pytest`,
+puis dans `frontend/` : `npm run typecheck && npm run lint && npm test && npm run build`.
+Tests PostgreSQL (facultatifs) : `RMA_TEST_POSTGRES_URL=postgresql+psycopg://... uv run pytest tests/integration/test_postgres_platform.py`.
+
 ## Prérequis
 
 - Windows 10/11.
