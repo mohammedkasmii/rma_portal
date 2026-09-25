@@ -1,5 +1,11 @@
 # RMA Portal multi-workflow system design
 
+> This document describes the additive Windows-era foundation introduced in
+> commit `7d13b9b`. The approved V2 product rules, Ubuntu deployment, React
+> frontend, PostgreSQL cutover and optional Ollama boundary are defined in
+> `docs/rma-platform-v2-implementation-plan.md`, which supersedes the technology
+> and delivery decisions below while retaining the same domain boundaries.
+
 ## Purpose
 
 RMA Portal is a read-only operational inbox over OmegaFlow. It does not
