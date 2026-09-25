@@ -8,6 +8,7 @@ persisting dossiers.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -52,6 +53,51 @@ class QueueSnapshot:
     @property
     def rows_seen(self) -> int:
         return len(self.rows)
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowQueueRow:
+    """One row of any captured queue: identity, detail link and the captured
+    list fields keyed by the workflow definition's field keys."""
+
+    record_id: str
+    details_href: str
+    fields: Mapping[str, str]
+
+    def as_ref(self) -> PortalDossierRef:
+        return PortalDossierRef(record_id=self.record_id, details_href=self.details_href)
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowSnapshot:
+    workflow_key: str
+    rows: tuple[WorkflowQueueRow, ...] = field(default_factory=tuple)
+    pages_seen: int = 0
+
+    @property
+    def rows_seen(self) -> int:
+        return len(self.rows)
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowReadOutcome:
+    """Independent result of reading one workflow.
+
+    A failed workflow is data, not an exception: the caller keeps reading the
+    remaining workflows and only reconciles the ones that produced rows.
+    """
+
+    workflow_key: str
+    status: PollStatus
+    snapshot: WorkflowSnapshot
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DossierDetailValues:
+    """Raw text of the shared-detail fields present on a dossier detail page."""
+
+    values: Mapping[str, str]
 
 
 @dataclass(frozen=True, slots=True)

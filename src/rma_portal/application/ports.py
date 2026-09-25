@@ -7,7 +7,7 @@ new ``PortalReader``/``PortalReaderFactory`` pair and registering it in
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from datetime import datetime
 from typing import Protocol
@@ -15,9 +15,11 @@ from typing import Protocol
 from rma_portal.application.dto import (
     DashboardRow,
     DossierDetails,
+    DossierDetailValues,
     PortalDossierRef,
     QueueRow,
     QueueSnapshot,
+    WorkflowReadOutcome,
 )
 from rma_portal.domain.enums import (
     AiFeature,
@@ -59,6 +61,21 @@ class PasswordHasher(Protocol):
 
 
 class PortalReader(Protocol):
+    """One authenticated browser session, reused for a whole synchronization cycle."""
+
+    async def read_workflow(self, definition: WorkflowDefinition) -> WorkflowReadOutcome:
+        """Read one workflow's queue. Never raises for a read problem: the
+        outcome is COMPLETE, PARTIAL, AUTH_REQUIRED or FAILED, so one broken
+        workflow can neither stop nor invalidate another."""
+        ...
+
+    async def read_dossier_detail_fields(
+        self, dossier: PortalDossierRef, fields: Sequence[FieldSpec]
+    ) -> DossierDetailValues:
+        """Read the shared detail page once per record per session (cached).
+        Raises ``DetailReadError`` (non-fatal) or ``PortalAuthRequiredError``."""
+        ...
+
     async def read_agreement_queue(self) -> QueueSnapshot: ...
 
     async def read_dossier_details(self, dossier: PortalDossierRef) -> DossierDetails: ...

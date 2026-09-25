@@ -7,9 +7,11 @@ and docs/architecture.md section 7 for the full read-only policy.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from types import TracebackType
 from typing import Any
@@ -23,12 +25,17 @@ from rma_portal.application.dto import (
     BrowserProfileLockedError,
     DetailReadError,
     DossierDetails,
+    DossierDetailValues,
     PortalAuthRequiredError,
     PortalDossierRef,
     PortalPartialReadError,
     PortalReadError,
     QueueSnapshot,
+    WorkflowReadOutcome,
+    WorkflowSnapshot,
 )
+from rma_portal.domain.enums import PollStatus
+from rma_portal.domain.workflow_definition import FieldSpec, WorkflowDefinition
 from rma_portal.infrastructure.portal.parser import (
     detect_auth_required,
     merge_snapshots,
@@ -44,6 +51,14 @@ from rma_portal.infrastructure.portal.session_state import (
     load_session_state,
     origin_of,
     restore_session_state,
+)
+from rma_portal.infrastructure.portal.workflow_parser import (
+    has_enabled_next,
+    has_table_header,
+    merge_workflow_snapshots,
+    parse_detail_fields,
+    parse_total_pages,
+    parse_workflow_page,
 )
 from rma_portal.observability import log_stage, strip_query
 
@@ -63,29 +78,48 @@ _SEARCH_SUBMIT_SELECTOR = '#view_1874 form.kn-search_form button[type="submit"]'
 # Captured pagination markup: two identical ".kn-page-select" dropdowns
 # (top/bottom of the list) and a ".kn-change-page.kn-next" control that
 # gains an additional "disabled" class only once there is truly no next
-# page -- see _go_to_page and _verify_last_page_reached.
-_PAGE_SELECT_SELECTOR = "#view_1874 .kn-page-select"
-_NEXT_PAGE_SELECTOR = "#view_1874 .kn-change-page.kn-next"
+# page. Every selector below is scoped to one view root (``#view_N``), so
+# two views on the same route (e.g. the two Carence tables) never mix.
+_PAGE_SELECT = ".kn-page-select"
+_NEXT_PAGE = ".kn-change-page.kn-next"
+_LEGACY_ROOT = AUTHENTICATED_VIEW_SELECTOR
 _PAGE_TRANSITION_TIMEOUT_MS = 20_000
-_ROW_IDS_JS = (
-    "() => Array.from(document.querySelectorAll("
-    "'#view_1874 table tbody tr[id]')).map(r => r.id).sort().join(',')"
-)
+_MAX_PAGES = 200
+_STABLE_POLL_MS = 300
+_STABLE_TIMEOUT_SECONDS = 8.0
+_DETAIL_READY_SELECTOR = ".kn-detail .kn-detail-body"
+_HOME_ROUTE = "#accueil/"
+
+
+def _row_ids_js(root: str) -> str:
+    return (
+        "() => Array.from(document.querySelectorAll("
+        f"'{root} table tbody tr[id]')).map(r => r.id).sort().join(',')"
+    )
+
+
 # Two conditions, both required: every ".kn-page-select" (there are two,
 # top and bottom -- only the first is ever written to directly) shows the
 # requested page, AND the rendered row set differs from what was on
 # screen before navigating. Checking only the dropdown this code itself
-# just set (the previous implementation) passes the instant Playwright
-# writes that value -- before Knack's AJAX-driven refresh has even
-# started, since the *second*, untouched dropdown only updates once
-# Knack's own view re-render actually happens.
-_PAGE_TRANSITION_JS = """([selector, expected, beforeIds]) => {
+# just set passes the instant Playwright writes that value -- before Knack's
+# AJAX-driven refresh has even started, since the *second*, untouched
+# dropdown only updates once Knack's own view re-render actually happens.
+_PAGE_TRANSITION_JS = """([selector, expected, beforeIds, rowsSelector]) => {
     const selects = document.querySelectorAll(selector);
     if (selects.length === 0) return false;
     for (const s of selects) { if (s.value !== expected) return false; }
-    const rows = Array.from(document.querySelectorAll(
-        '#view_1874 table tbody tr[id]'
-    )).map(r => r.id).sort().join(',');
+    const rows = Array.from(document.querySelectorAll(rowsSelector))
+        .map(r => r.id).sort().join(',');
+    return rows !== beforeIds;
+}"""
+
+# Used when the last known dropdown option was passed and the "next" control is
+# still enabled (the queue grew while it was being read): only row identity can
+# prove the new page rendered.
+_ROWS_CHANGED_JS = """([rowsSelector, beforeIds]) => {
+    const rows = Array.from(document.querySelectorAll(rowsSelector))
+        .map(r => r.id).sort().join(',');
     return rows !== beforeIds;
 }"""
 
@@ -109,14 +143,24 @@ class _StalePageResultError(RuntimeError):
         )
 
 
-async def is_authenticated_view_present(page: Any) -> bool:
-    """True once the authenticated queue view has genuinely rendered --
+async def is_authenticated_view_present(page: Any, selector: str = AUTHENTICATED_VIEW_SELECTOR) -> bool:
+    """True once an authenticated queue view has genuinely rendered --
     not just the absence of a login screen, which an unauthenticated
     loading shell also satisfies. The one definition of "authenticated"
-    shared by ``verify_authenticated`` below and the login-capture polling
-    in ``session_setup.launch_visible_browser_and_wait``."""
-    view = page.locator(AUTHENTICATED_VIEW_SELECTOR)
+    shared by ``verify_authenticated`` below, every workflow read and the
+    login-capture polling in ``session_setup.launch_visible_browser_and_wait``."""
+    view = page.locator(selector)
     return await view.count() > 0 and await view.first.is_visible()
+
+
+def workflow_url(base_url: str, route: str) -> str:
+    """The exact captured hash route under the portal origin (no slash after ``#``)."""
+    return f"{base_url.rstrip('/')}/{route}"
+
+
+def _short_error(exc: BaseException) -> str:
+    text = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+    return text[:300]
 
 
 class CamoufoxPortalReaderFactory:
@@ -190,6 +234,8 @@ class CamoufoxPortalReader:
         self._manager: AsyncCamoufox | None = None
         self._context = None
         self._page = None
+        self._current_route: str | None = None
+        self._detail_cache: dict[str, DossierDetailValues] = {}
         self.blocked_write_attempts: list[str] = []
 
     async def __aenter__(self) -> CamoufoxPortalReader:
@@ -245,6 +291,8 @@ class CamoufoxPortalReader:
         finally:
             self._context = None
             self._page = None
+            self._current_route = None
+            self._detail_cache.clear()
             if self._lock_cm is not None:
                 if not manager_closed and self._lock is not None:
                     # Teardown did not complete (e.g. a caller's bounding
@@ -294,8 +342,10 @@ class CamoufoxPortalReader:
                 "La session OmegaFlow doit être reconnectée (Configurer_Session_RMA.bat)."
             )
 
-    async def _apply_garage_agree_filter(self, page: Any) -> None:
-        """Select 'Garage agréé' on the Chosen-hidden native ``<select>``.
+    async def _apply_filter(
+        self, page: Any, root: str, control_selector: str, value: str, label: str
+    ) -> None:
+        """Select a captured option on the Chosen-hidden native ``<select>``.
 
         The real element is rendered ``style="display: none"`` behind
         OmegaFlow's Chosen widget (RMA_FIRST), so a plain
@@ -306,32 +356,37 @@ class CamoufoxPortalReader:
         downstream (Knack's own filtering, not the cosmetic Chosen UI)
         depends on them rather than on Playwright's own event dispatch.
         """
-        view = page.locator("#view_1874")
+        view = page.locator(root)
 
-        with log_stage(logger, "garage_agree_selection"):
-            procedure = view.locator("#kn-conn-1-field_219")
-            await procedure.wait_for(state="attached", timeout=15_000)
-            await procedure.select_option(value=self._procedure_value, force=True, timeout=15_000)
+        with log_stage(logger, "filter_selection", filter=label):
+            control = view.locator(control_selector)
+            await control.wait_for(state="attached", timeout=15_000)
+            await control.select_option(value=value, force=True, timeout=15_000)
 
-            actual_value = await procedure.input_value()
-            if actual_value != self._procedure_value:
+            actual_value = await control.input_value()
+            if actual_value != value:
                 raise PortalReadError(
-                    "Le filtre Garage agréé n'a pas pu être appliqué "
+                    f"Le filtre {label} n'a pas pu être appliqué "
                     f"(valeur obtenue: {actual_value!r})."
                 )
-            await procedure.evaluate(
+            await control.evaluate(
                 "el => {"
                 " el.dispatchEvent(new Event('input', {bubbles: true}));"
                 " el.dispatchEvent(new Event('change', {bubbles: true}));"
                 "}"
             )
 
-        await self._submit_search(page)
+        await self._submit_search(page, root)
 
-    async def _submit_search(self, page: Any) -> None:
-        """Clicks the search form's submit button -- captured selector:
-        ``#view_1874 form.kn-search_form button[type="submit"]`` -- and
-        waits for the AJAX-driven search to complete.
+    async def _apply_garage_agree_filter(self, page: Any) -> None:
+        await self._apply_filter(
+            page, _LEGACY_ROOT, "#kn-conn-1-field_219", self._procedure_value, "Garage agréé"
+        )
+
+    async def _submit_search(self, page: Any, root: str = _LEGACY_ROOT) -> None:
+        """Clicks the view's search form submit button -- captured selector:
+        ``#view_N form.kn-search_form button[type="submit"]`` -- and waits for the
+        AJAX-driven search to complete.
 
         Completion is read from the button's own ``is-loading`` class,
         which Knack toggles on this exact element while the request is in
@@ -343,19 +398,20 @@ class CamoufoxPortalReader:
         dossiers is valid and must produce a COMPLETE snapshot with zero
         rows (see docs/omegaflow-contract.md).
         """
-        with log_stage(logger, "search_submission", selector=_SEARCH_SUBMIT_SELECTOR):
-            button = page.locator(_SEARCH_SUBMIT_SELECTOR)
+        submit_selector = f'{root} form.kn-search_form button[type="submit"]'
+        with log_stage(logger, "search_submission", selector=submit_selector):
+            button = page.locator(submit_selector)
             try:
                 await button.wait_for(state="visible", timeout=15_000)
             except Exception as exc:
                 raise PortalReadError(
                     "Bouton de recherche OmegaFlow introuvable (étape: affichage du bouton, "
-                    f"sélecteur: {_SEARCH_SUBMIT_SELECTOR!r})."
+                    f"sélecteur: {submit_selector!r})."
                 ) from exc
 
             await button.click()
 
-            loading_button = page.locator(f"{_SEARCH_SUBMIT_SELECTOR}.is-loading")
+            loading_button = page.locator(f"{submit_selector}.is-loading")
             # Best-effort: the AJAX request may already be done by the time this
             # checks, in which case there is nothing to observe starting.
             with contextlib.suppress(Exception):
@@ -365,33 +421,65 @@ class CamoufoxPortalReader:
             except Exception as exc:
                 raise PortalReadError(
                     "Délai dépassé en attendant la fin de la recherche OmegaFlow "
-                    f"(étape: recherche, sélecteur: {_SEARCH_SUBMIT_SELECTOR!r})."
+                    f"(étape: recherche, sélecteur: {submit_selector!r})."
                 ) from exc
 
             await self._settle(page)
 
-    async def _go_to_page(self, page: Any, page_number: int) -> None:
+    async def _go_to_page(self, page: Any, page_number: int, root: str = _LEGACY_ROOT) -> None:
         """Navigates to ``page_number`` and waits for genuine evidence the
         new page's results have actually rendered -- see
         ``_PAGE_TRANSITION_JS`` for the two conditions this requires
         together. Raises Playwright's own ``TimeoutError`` (a plain
         ``Exception``, not ``PortalReadError``) if neither materializes
-        within :data:`_PAGE_TRANSITION_TIMEOUT_MS` -- caught by
-        ``read_agreement_queue``'s generic handler, which preserves
-        whatever pages were already collected as a ``PARTIAL`` result
-        rather than discarding them.
+        within :data:`_PAGE_TRANSITION_TIMEOUT_MS` -- callers turn that into
+        a ``PARTIAL`` result that keeps whatever pages were already
+        collected rather than discarding them.
         """
-        select = page.locator(_PAGE_SELECT_SELECTOR).first
-        before_row_ids = await page.evaluate(_ROW_IDS_JS)
+        rows_selector = f"{root} table tbody tr[id]"
+        select = page.locator(f"{root} {_PAGE_SELECT}").first
+        before_row_ids = await page.evaluate(_row_ids_js(root))
         await select.select_option(str(page_number))
         await page.wait_for_function(
             _PAGE_TRANSITION_JS,
-            arg=[_PAGE_SELECT_SELECTOR, str(page_number), before_row_ids],
+            arg=[f"{root} {_PAGE_SELECT}", str(page_number), before_row_ids, rows_selector],
             timeout=_PAGE_TRANSITION_TIMEOUT_MS,
         )
         await self._settle(page)
 
-    async def _verify_last_page_reached(self, page: Any, total_pages: int) -> None:
+    async def _click_next_page(self, page: Any, root: str) -> None:
+        rows_selector = f"{root} table tbody tr[id]"
+        before_row_ids = await page.evaluate(_row_ids_js(root))
+        await page.locator(f"{root} {_NEXT_PAGE}").first.click()
+        await page.wait_for_function(
+            _ROWS_CHANGED_JS,
+            arg=[rows_selector, before_row_ids],
+            timeout=_PAGE_TRANSITION_TIMEOUT_MS,
+        )
+        await self._settle(page)
+
+    async def _wait_for_stable_rows(self, page: Any, root: str) -> None:
+        """Waits until the rendered row identity stops changing.
+
+        Knack re-renders a view in steps (loading state, then rows); reading
+        the DOM mid-render would record a partial page as if it were whole.
+        Two identical row-id snapshots one poll apart count as settled. After
+        the bound the page is used as-is: staleness across pages is still
+        caught by the changed-row-identity checks of the pagination loop.
+        """
+        rows_js = _row_ids_js(root)
+        deadline = time.monotonic() + _STABLE_TIMEOUT_SECONDS
+        previous = await page.evaluate(rows_js)
+        while time.monotonic() < deadline:
+            await page.wait_for_timeout(_STABLE_POLL_MS)
+            current = await page.evaluate(rows_js)
+            if current == previous:
+                return
+            previous = current
+
+    async def _verify_last_page_reached(
+        self, page: Any, total_pages: int, root: str = _LEGACY_ROOT
+    ) -> None:
         """Cross-checks the captured 'Next' control evidence against
         ``total_pages`` after the last page has been visited --
         ``.kn-change-page.kn-next`` only gains its additional ``disabled``
@@ -402,7 +490,7 @@ class CamoufoxPortalReader:
         is not an error -- a genuinely single-page result may not render
         one.
         """
-        next_control = page.locator(_NEXT_PAGE_SELECTOR).first
+        next_control = page.locator(f"{root} {_NEXT_PAGE}").first
         if await next_control.count() == 0:
             return
         classes = (await next_control.get_attribute("class")) or ""
@@ -412,7 +500,9 @@ class CamoufoxPortalReader:
                 "(le bouton 'suivant' n'est pas désactivé après la dernière page lue)."
             )
 
-    async def _wait_for_queue_view(self, page: Any) -> None:
+    async def _wait_for_queue_view(
+        self, page: Any, root: str = _LEGACY_ROOT, *, require_table_header: bool = False
+    ) -> None:
         """Polls for the authenticated queue view instead of a single blind
         ``wait_for()`` -- right after navigation, Knack's page is often
         still just an unauthenticated loading shell (no login marker yet,
@@ -425,11 +515,18 @@ class CamoufoxPortalReader:
         same definitions used everywhere else, so an unauthenticated
         session is caught within one poll interval instead of the full
         timeout.
+
+        With ``require_table_header`` the table header must also be present:
+        that is the positive evidence a queue with zero rows rendered, as
+        opposed to a container that is still loading.
         """
         deadline = time.monotonic() + _QUEUE_VIEW_TIMEOUT_SECONDS
         while True:
             await self._assert_authenticated()
-            if await is_authenticated_view_present(page):
+            if await is_authenticated_view_present(page, root) and (
+                not require_table_header
+                or await page.locator(f"{root} table thead th").count() > 0
+            ):
                 return
             if time.monotonic() >= deadline:
                 raise PortalReadError(
@@ -465,7 +562,7 @@ class CamoufoxPortalReader:
 
             for page_number in range(2, total_pages + 1):
                 with log_stage(logger, "pagination_page", page=page_number, total=total_pages):
-                    await self._go_to_page(page, page_number)
+                    await self._go_to_page(page, page_number, _LEGACY_ROOT)
                     html = await page.content()
                     await self._assert_authenticated()
                     page_snapshot = parse_queue_page(html)
@@ -535,6 +632,181 @@ class CamoufoxPortalReader:
                 if await is_authenticated_view_present(page):
                     return
                 await page.wait_for_timeout(_VERIFY_POLL_INTERVAL_MS)
+
+    async def read_workflows(
+        self, definitions: Sequence[WorkflowDefinition]
+    ) -> dict[str, WorkflowReadOutcome]:
+        """Reads every definition sequentially in this one authenticated context.
+
+        Each workflow gets an independent outcome; one failure never stops or
+        invalidates another.
+        """
+        outcomes: dict[str, WorkflowReadOutcome] = {}
+        for definition in definitions:
+            outcomes[definition.key] = await self.read_workflow(definition)
+        return outcomes
+
+    async def read_workflow(self, definition: WorkflowDefinition) -> WorkflowReadOutcome:
+        """Reads one workflow's complete queue, never raising for a read problem.
+
+        Returns COMPLETE, PARTIAL (rows collected before a mid-pagination
+        failure), AUTH_REQUIRED or FAILED. Only cancellation propagates.
+        """
+        page = self._require_page()
+        root = definition.root_selector
+        collected: list[WorkflowSnapshot] = []
+        writes_before = len(self.blocked_write_attempts)
+        started = time.perf_counter()
+        try:
+            with log_stage(logger, "workflow_navigation", workflow=definition.key):
+                await self._open_workflow_view(page, definition)
+            if definition.filter is not None:
+                spec = definition.filter
+                await self._apply_filter(page, root, spec.control_selector, spec.value, spec.label)
+            await self._wait_for_stable_rows(page, root)
+
+            html = await page.content()
+            await self._assert_authenticated()
+            if not has_table_header(html, definition):
+                raise PortalReadError(
+                    f"La file « {definition.name} » n'affiche pas son tableau "
+                    "(structure inattendue)."
+                )
+            collected.append(parse_workflow_page(html, definition))
+            page_number = 1
+            while True:
+                total_pages = parse_total_pages(html, definition)
+                logger.info(
+                    "stage=pagination outcome=PAGE_COLLECTED workflow=%s page=%d total_pages=%d rows=%d",
+                    definition.key,
+                    page_number,
+                    total_pages,
+                    len(collected[-1].rows),
+                )
+                if page_number < total_pages:
+                    use_select = True
+                elif has_enabled_next(html, definition):
+                    # The queue grew while it was being read: the dropdown does not list
+                    # the new page yet, but the "next" control proves it exists.
+                    use_select = False
+                else:
+                    break
+                page_number += 1
+                if page_number > _MAX_PAGES:
+                    raise RuntimeError(f"Plus de {_MAX_PAGES} pages lues pour {definition.key}.")
+                with log_stage(
+                    logger, "pagination_page", workflow=definition.key, page=page_number
+                ):
+                    if use_select:
+                        await self._go_to_page(page, page_number, root)
+                    else:
+                        await self._click_next_page(page, root)
+                    await self._wait_for_stable_rows(page, root)
+                    html = await page.content()
+                    await self._assert_authenticated()
+                    page_snapshot = parse_workflow_page(html, definition)
+                    previous_ids = {row.record_id for row in collected[-1].rows}
+                    current_ids = {row.record_id for row in page_snapshot.rows}
+                    if current_ids and current_ids == previous_ids:
+                        raise _StalePageResultError(page_number)
+                    collected.append(page_snapshot)
+        except PortalAuthRequiredError as exc:
+            return self._outcome(definition, PollStatus.AUTH_REQUIRED, [], str(exc))
+        except asyncio.CancelledError:
+            raise
+        except PortalReadError as exc:
+            status = PollStatus.PARTIAL if collected else PollStatus.FAILED
+            return self._outcome(definition, status, collected, str(exc))
+        except Exception as exc:  # noqa: BLE001 - one workflow's failure is data, not a crash
+            message = f"Lecture incomplète de « {definition.name} » ({_short_error(exc)})."
+            status = PollStatus.PARTIAL if collected else PollStatus.FAILED
+            return self._outcome(definition, status, collected, message)
+        finally:
+            if len(self.blocked_write_attempts) > writes_before:
+                logger.error(
+                    "workflow %s attempted %d blocked non-read-only request(s)",
+                    definition.key,
+                    len(self.blocked_write_attempts) - writes_before,
+                )
+
+        merged = merge_workflow_snapshots(definition, collected)
+        logger.info(
+            "stage=workflow_read outcome=COMPLETE workflow=%s pages=%d unique_rows=%d elapsed_ms=%.1f",
+            definition.key,
+            merged.pages_seen,
+            len(merged.rows),
+            (time.perf_counter() - started) * 1000,
+        )
+        return WorkflowReadOutcome(definition.key, PollStatus.COMPLETE, merged, None)
+
+    @staticmethod
+    def _outcome(
+        definition: WorkflowDefinition,
+        status: PollStatus,
+        collected: Sequence[WorkflowSnapshot],
+        error: str,
+    ) -> WorkflowReadOutcome:
+        snapshot = (
+            merge_workflow_snapshots(definition, collected)
+            if collected
+            else WorkflowSnapshot(workflow_key=definition.key)
+        )
+        return WorkflowReadOutcome(definition.key, status, snapshot, error)
+
+    async def _open_workflow_view(self, page: Any, definition: WorkflowDefinition) -> None:
+        """Navigates to the workflow's captured route and waits for its rendered view.
+
+        A hash-only navigation to the route already displayed would neither
+        reload the scene nor reset pagination, so a second workflow on the same
+        route (the agreement variants, or the two Carence tables) first visits
+        the home route: every workflow then starts from a freshly rendered page 1.
+        """
+        if self._current_route == definition.route:
+            await page.goto(
+                workflow_url(self._base_url, _HOME_ROUTE),
+                wait_until="domcontentloaded",
+                timeout=60_000,
+            )
+        await page.goto(
+            workflow_url(self._base_url, definition.route),
+            wait_until="domcontentloaded",
+            timeout=60_000,
+        )
+        self._current_route = definition.route
+        await self._wait_for_queue_view(page, definition.root_selector, require_table_header=True)
+
+    async def read_dossier_detail_fields(
+        self, dossier: PortalDossierRef, fields: Sequence[FieldSpec]
+    ) -> DossierDetailValues:
+        """Reads the shared dossier detail page once per record per session.
+
+        The detail page is the same whichever queue linked to it, so the values
+        are cached by record id: reading a dossier for a second workflow costs
+        no browser navigation.
+        """
+        cached = self._detail_cache.get(dossier.record_id)
+        if cached is not None:
+            return cached
+        page = self._require_page()
+        target = urljoin(f"{self._base_url.rstrip('/')}/", dossier.details_href)
+        try:
+            await page.goto(target, wait_until="domcontentloaded", timeout=60_000)
+            await self._assert_authenticated()
+            await page.locator(_DETAIL_READY_SELECTOR).first.wait_for(timeout=30_000)
+            await self._settle(page)
+            html = await page.content()
+            await self._assert_authenticated()
+        except PortalAuthRequiredError:
+            raise
+        except Exception as exc:
+            raise DetailReadError(
+                f"Lecture du détail impossible pour {dossier.record_id} ({type(exc).__name__})."
+            ) from exc
+        # A detail visit leaves the SPA on a dossier page: the next queue read must navigate.
+        self._current_route = None
+        result = DossierDetailValues(values=parse_detail_fields(html, fields))
+        self._detail_cache[dossier.record_id] = result
+        return result
 
     async def read_dossier_details(self, dossier: PortalDossierRef) -> DossierDetails:
         page = self._require_page()
