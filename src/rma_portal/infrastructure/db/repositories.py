@@ -3,13 +3,21 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from datetime import datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from rma_portal.application.dto import DashboardRow, DossierDetails, QueueRow
-from rma_portal.domain.enums import NotificationKind, PollStatus, SessionStatus, WorkStatus
+from rma_portal.domain.enums import (
+    NotificationClass,
+    NotificationKind,
+    PollStatus,
+    SessionStatus,
+    WorkflowRulesStatus,
+    WorkStatus,
+)
 from rma_portal.domain.models import (
     Dossier,
     DossierDates,
@@ -76,6 +84,8 @@ def _to_domain_dossier(row: DossierRow) -> Dossier:
         last_seen_at=row.last_seen_at,
         active=row.active,
         missing_complete_polls=row.missing_complete_polls,
+        detail_fields=json.loads(row.detail_fields_json or "{}"),
+        detail_fetched_at=row.detail_fetched_at,
     )
 
 
@@ -121,6 +131,14 @@ def _to_domain_workflow(row: WorkflowRow) -> Workflow:
         last_poll_at=row.last_poll_at,
         last_success_at=row.last_success_at,
         last_error=row.last_error,
+        notification_class=row.notification_class,
+        catalog_version=row.catalog_version,
+        filter_field=row.filter_field,
+        filter_operator=row.filter_operator,
+        filter_value=row.filter_value,
+        filter_label=row.filter_label,
+        primary_date_key=row.primary_date_key,
+        last_poll_status=row.last_poll_status,
     )
 
 
@@ -171,6 +189,7 @@ def _to_domain_note(row: DossierNoteRow) -> DossierNote:
         author_id=row.author_id,
         body=row.body,
         created_at=row.created_at,
+        workflow_membership_id=row.workflow_membership_id,
     )
 
 
@@ -276,6 +295,93 @@ class SqlAlchemyWorkflowRepository:
         ).scalars()
         return [_to_domain_workflow(row) for row in rows]
 
+    def create(self, workflow: Workflow) -> Workflow:
+        row = WorkflowRow(
+            portal_account_id=workflow.portal_account_id,
+            key=workflow.key,
+            name=workflow.name,
+            category=workflow.category,
+            route=workflow.route,
+            view_id=workflow.view_id,
+            enabled=workflow.enabled,
+            sort_order=workflow.sort_order,
+            rules_status=workflow.rules_status,
+            baseline_completed_at=workflow.baseline_completed_at,
+            last_poll_at=workflow.last_poll_at,
+            last_success_at=workflow.last_success_at,
+            last_error=workflow.last_error,
+            notification_class=workflow.notification_class,
+            catalog_version=workflow.catalog_version,
+            filter_field=workflow.filter_field,
+            filter_operator=workflow.filter_operator,
+            filter_value=workflow.filter_value,
+            filter_label=workflow.filter_label,
+            primary_date_key=workflow.primary_date_key,
+            last_poll_status=workflow.last_poll_status,
+        )
+        self._session.add(row)
+        self._session.flush()
+        return _to_domain_workflow(row)
+
+    def update_definition(self, workflow: Workflow) -> None:
+        """Refresh catalog-owned fields only; never touches admin-owned state
+        (enabled, rules status, notification class) or poll state."""
+        row = self._session.get(WorkflowRow, workflow.id)
+        if row is None:
+            raise LookupError(f"workflow {workflow.id} not found")
+        row.name = workflow.name
+        row.category = workflow.category
+        row.route = workflow.route
+        row.view_id = workflow.view_id
+        row.sort_order = workflow.sort_order
+        row.catalog_version = workflow.catalog_version
+        row.filter_field = workflow.filter_field
+        row.filter_operator = workflow.filter_operator
+        row.filter_value = workflow.filter_value
+        row.filter_label = workflow.filter_label
+        row.primary_date_key = workflow.primary_date_key
+
+    def update_admin_config(
+        self,
+        workflow_id: int,
+        *,
+        enabled: bool | None = None,
+        rules_status: WorkflowRulesStatus | None = None,
+        notification_class: NotificationClass | None = None,
+    ) -> Workflow:
+        row = self._session.get(WorkflowRow, workflow_id)
+        if row is None:
+            raise LookupError(f"workflow {workflow_id} not found")
+        if enabled is not None:
+            row.enabled = enabled
+        if rules_status is not None:
+            row.rules_status = rules_status
+        if notification_class is not None:
+            row.notification_class = notification_class
+        return _to_domain_workflow(row)
+
+    def mark_poll_finished(
+        self,
+        workflow_id: int,
+        *,
+        status: PollStatus,
+        polled_at: datetime,
+        error: str | None,
+    ) -> None:
+        row = self._session.get(WorkflowRow, workflow_id)
+        if row is None:
+            return
+        row.last_poll_at = polled_at
+        row.last_poll_status = status
+        row.last_error = error
+        if status is PollStatus.COMPLETE:
+            row.last_success_at = polled_at
+
+    def mark_baseline_completed(self, workflow_id: int, completed_at: datetime) -> None:
+        row = self._session.get(WorkflowRow, workflow_id)
+        if row is not None and row.baseline_completed_at is None:
+            row.baseline_completed_at = completed_at
+
 
 class SqlAlchemyWorkflowMembershipRepository:
     def __init__(self, session: Session) -> None:
@@ -298,6 +404,93 @@ class SqlAlchemyWorkflowMembershipRepository:
             .order_by(WorkflowRow.sort_order, WorkflowMembershipRow.id)
         ).scalars()
         return [_to_domain_membership(row) for row in rows]
+
+    def get_by_id(self, membership_id: int) -> WorkflowMembership | None:
+        row = self._session.get(WorkflowMembershipRow, membership_id)
+        return _to_domain_membership(row) if row else None
+
+    def create(
+        self,
+        *,
+        workflow_id: int,
+        dossier_id: int,
+        seen_at: datetime,
+        captured_fields: Mapping[str, str],
+        fingerprint: str,
+    ) -> WorkflowMembership:
+        row = WorkflowMembershipRow(
+            workflow_id=workflow_id,
+            dossier_id=dossier_id,
+            first_seen_at=seen_at,
+            last_seen_at=seen_at,
+            active=True,
+            missing_complete_polls=0,
+            occurrence_number=1,
+            captured_fields_json=json.dumps(dict(captured_fields), sort_keys=True),
+            fingerprint=fingerprint,
+            last_changed_at=None,
+        )
+        self._session.add(row)
+        self._session.flush()
+        return _to_domain_membership(row)
+
+    def refresh(
+        self,
+        membership_id: int,
+        *,
+        seen_at: datetime,
+        captured_fields: Mapping[str, str],
+        fingerprint: str,
+        changed: bool,
+    ) -> None:
+        """An active membership seen again: resets absence and stores the latest fields."""
+        row = self._session.get(WorkflowMembershipRow, membership_id)
+        if row is None:
+            raise LookupError(f"membership {membership_id} not found")
+        row.last_seen_at = seen_at
+        row.missing_complete_polls = 0
+        row.captured_fields_json = json.dumps(dict(captured_fields), sort_keys=True)
+        row.fingerprint = fingerprint
+        if changed:
+            row.last_changed_at = seen_at
+
+    def reactivate(
+        self,
+        membership_id: int,
+        *,
+        seen_at: datetime,
+        captured_fields: Mapping[str, str],
+        fingerprint: str,
+    ) -> int:
+        """Bring an inactive membership back; returns the new occurrence number."""
+        row = self._session.get(WorkflowMembershipRow, membership_id)
+        if row is None:
+            raise LookupError(f"membership {membership_id} not found")
+        row.active = True
+        row.missing_complete_polls = 0
+        row.last_seen_at = seen_at
+        row.occurrence_number += 1
+        row.captured_fields_json = json.dumps(dict(captured_fields), sort_keys=True)
+        row.fingerprint = fingerprint
+        return row.occurrence_number
+
+    def apply_absence_increment(self, membership_id: int, count: int) -> None:
+        row = self._session.get(WorkflowMembershipRow, membership_id)
+        if row is not None:
+            row.missing_complete_polls = count
+
+    def deactivate(self, membership_id: int) -> None:
+        row = self._session.get(WorkflowMembershipRow, membership_id)
+        if row is not None:
+            row.active = False
+
+    def by_record_id(self, workflow_id: int) -> dict[str, WorkflowMembership]:
+        rows = self._session.execute(
+            select(WorkflowMembershipRow, DossierRow.record_id)
+            .join(DossierRow, DossierRow.id == WorkflowMembershipRow.dossier_id)
+            .where(WorkflowMembershipRow.workflow_id == workflow_id)
+        ).all()
+        return {record_id: _to_domain_membership(membership) for membership, record_id in rows}
 
     def existing_state_by_workflow(
         self, workflow_id: int
@@ -490,6 +683,83 @@ class SqlAlchemyNotificationRepository:
         self._session.add(row)
         self._session.flush()
         return Notification(id=row.id, dossier_id=row.dossier_id, kind=row.kind, detected_at=row.detected_at)
+
+    def create_for_occurrence(
+        self,
+        *,
+        dossier_id: int,
+        workflow_id: int,
+        occurrence_id: int,
+        kind: NotificationKind,
+        detected_at: datetime,
+        event_id: int | None = None,
+    ) -> Notification:
+        row = NotificationRow(
+            dossier_id=dossier_id,
+            kind=kind,
+            detected_at=detected_at,
+            workflow_id=workflow_id,
+            workflow_occurrence_id=occurrence_id,
+            workflow_event_id=event_id,
+        )
+        self._session.add(row)
+        self._session.flush()
+        return Notification(
+            id=row.id,
+            dossier_id=row.dossier_id,
+            kind=row.kind,
+            detected_at=row.detected_at,
+            workflow_id=row.workflow_id,
+            workflow_occurrence_id=row.workflow_occurrence_id,
+            workflow_event_id=row.workflow_event_id,
+        )
+
+    def acknowledge_occurrence(self, occurrence_id: int, user_id: int, seen_at: datetime) -> int:
+        """Mark every alert of one occurrence read for one employee only.
+
+        Returns the number of newly read notifications (0 when already read).
+        """
+        already_read = select(NotificationReadRow.notification_id).where(
+            NotificationReadRow.user_id == user_id
+        )
+        unread_ids = self._session.execute(
+            select(NotificationRow.id).where(
+                NotificationRow.workflow_occurrence_id == occurrence_id,
+                NotificationRow.id.notin_(already_read),
+            )
+        ).scalars().all()
+        for notification_id in unread_ids:
+            self._session.add(
+                NotificationReadRow(notification_id=notification_id, user_id=user_id, seen_at=seen_at)
+            )
+        self._session.flush()
+        return len(unread_ids)
+
+    def unread_counts_for_user(self, user_id: int) -> dict[tuple[int | None, NotificationKind], int]:
+        """Unread alerts per (workflow id, kind) for one employee."""
+        self._session.flush()
+        already_read = select(NotificationReadRow.notification_id).where(
+            NotificationReadRow.user_id == user_id
+        )
+        rows = self._session.execute(
+            select(NotificationRow.workflow_id, NotificationRow.kind, func.count())
+            .where(NotificationRow.id.notin_(already_read))
+            .group_by(NotificationRow.workflow_id, NotificationRow.kind)
+        ).all()
+        return {(workflow_id, kind): count for workflow_id, kind, count in rows}
+
+    def is_occurrence_unread_for_user(self, occurrence_id: int, user_id: int) -> bool:
+        self._session.flush()
+        already_read = select(NotificationReadRow.notification_id).where(
+            NotificationReadRow.user_id == user_id
+        )
+        count = self._session.execute(
+            select(func.count()).select_from(NotificationRow).where(
+                NotificationRow.workflow_occurrence_id == occurrence_id,
+                NotificationRow.id.notin_(already_read),
+            )
+        ).scalar_one()
+        return count > 0
 
     def mark_all_existing_as_read_for_user(self, user_id: int, seen_at: datetime) -> None:
         already_read = select(NotificationReadRow.notification_id).where(

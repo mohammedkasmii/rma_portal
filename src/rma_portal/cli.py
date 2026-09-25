@@ -77,6 +77,44 @@ def _cmd_migrate(_: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_import_sqlite(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from rma_portal.config import load_settings
+    from rma_portal.infrastructure.db.session import create_engine_for
+    from rma_portal.infrastructure.db.sqlite_import import (
+        SqliteImportError,
+        import_sqlite_database,
+        upgrade_to_head,
+    )
+
+    settings = load_settings()
+    if settings.uses_sqlite:
+        print(
+            "RMA_PORTAL_DATABASE_URL doit désigner la base PostgreSQL de destination.",
+            file=sys.stderr,
+        )
+        return 1
+    upgrade_to_head(settings.database_url)
+    engine = create_engine_for(settings)
+    try:
+        report = import_sqlite_database(Path(args.source), engine)
+    except SqliteImportError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    finally:
+        engine.dispose()
+    for label, values in (
+        ("insérées", report.inserted),
+        ("mises à jour", report.updated),
+        ("déjà présentes", report.skipped),
+    ):
+        for table, count in sorted(values.items()):
+            print(f"{table}: {count} ligne(s) {label}")
+    print("Import terminé. Relancer la commande est sans danger.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="rma-portal")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -97,6 +135,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     migrate = subparsers.add_parser("migrate", help="Applique les migrations Alembic (upgrade head).")
     migrate.set_defaults(func=_cmd_migrate)
+
+    import_sqlite = subparsers.add_parser(
+        "import-sqlite",
+        help="Importe (de façon idempotente) l'ancienne base SQLite dans PostgreSQL.",
+    )
+    import_sqlite.add_argument("--source", required=True, help="Chemin de rma_portal.sqlite3")
+    import_sqlite.set_defaults(func=_cmd_import_sqlite)
 
     return parser
 

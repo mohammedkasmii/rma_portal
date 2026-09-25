@@ -60,7 +60,7 @@ def test_upgrade_from_empty_database_creates_expected_schema(tmp_path: Path):
         workflows = con.execute(
             "select key, view_id, enabled, rules_status from workflows"
         ).fetchall()
-        assert workflows == [("agreement_garage", "view_1874", 1, "UNCONFIRMED")]
+        assert workflows == [("agreement_garage", "view_1874", 1, "CONFIRMED")]
     finally:
         con.close()
 

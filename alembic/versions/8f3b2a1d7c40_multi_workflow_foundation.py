@@ -69,7 +69,7 @@ def upgrade() -> None:
                 'Dossiers en instance d''accord',
                 '#dossiers-en-instance-accord/',
                 'view_1874',
-                1,
+                TRUE,
                 10,
                 'UNCONFIRMED',
                 baseline_completed_at,

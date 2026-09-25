@@ -15,16 +15,32 @@ from rma_portal.infrastructure.db.repositories import (
     SqlAlchemyWorkflowMembershipRepository,
     SqlAlchemyWorkflowRepository,
 )
+from rma_portal.infrastructure.db.workflow_repositories import (
+    SqlAlchemyAiRunRepository,
+    SqlAlchemyOutboxRepository,
+    SqlAlchemySyncRunRepository,
+    SqlAlchemyWorkflowEventRepository,
+    SqlAlchemyWorkflowOccurrenceRepository,
+    SqlAlchemyWorkflowPollRunRepository,
+    SqlAlchemyWorkflowWorkRepository,
+)
 
 
 class SqlAlchemyUnitOfWork:
-    """One SQLite transaction. Not reusable across ``with`` blocks."""
+    """One database transaction. Not reusable across ``with`` blocks."""
 
     def __init__(self, session: Session) -> None:
         self._session = session
         self.portal_accounts = SqlAlchemyPortalAccountRepository(session)
         self.workflows = SqlAlchemyWorkflowRepository(session)
         self.workflow_memberships = SqlAlchemyWorkflowMembershipRepository(session)
+        self.workflow_occurrences = SqlAlchemyWorkflowOccurrenceRepository(session)
+        self.workflow_work = SqlAlchemyWorkflowWorkRepository(session)
+        self.sync_runs = SqlAlchemySyncRunRepository(session)
+        self.workflow_poll_runs = SqlAlchemyWorkflowPollRunRepository(session)
+        self.workflow_events = SqlAlchemyWorkflowEventRepository(session)
+        self.outbox = SqlAlchemyOutboxRepository(session)
+        self.ai_runs = SqlAlchemyAiRunRepository(session)
         self.dossiers = SqlAlchemyDossierRepository(session)
         self.notifications = SqlAlchemyNotificationRepository(session)
         self.poll_runs = SqlAlchemyPollRunRepository(session)

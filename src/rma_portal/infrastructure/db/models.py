@@ -25,10 +25,16 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from rma_portal.domain.enums import (
     MAX_NOTE_LENGTH,
+    AiFeature,
+    AiRunStatus,
+    NotificationClass,
     NotificationKind,
+    OccurrenceOrigin,
     PollStatus,
     Role,
     SessionStatus,
+    SyncTrigger,
+    WorkflowEventKind,
     WorkflowRulesStatus,
     WorkStatus,
 )
@@ -104,6 +110,16 @@ class WorkflowRow(Base):
     last_poll_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error: Mapped[str | None] = mapped_column(String(1000))
+    notification_class: Mapped[NotificationClass] = mapped_column(
+        _enum_column(NotificationClass, 20), nullable=False, default=NotificationClass.ACTION
+    )
+    catalog_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    filter_field: Mapped[str | None] = mapped_column(String(50))
+    filter_operator: Mapped[str | None] = mapped_column(String(20))
+    filter_value: Mapped[str | None] = mapped_column(String(100))
+    filter_label: Mapped[str | None] = mapped_column(String(200))
+    primary_date_key: Mapped[str | None] = mapped_column(String(100))
+    last_poll_status: Mapped[PollStatus | None] = mapped_column(_enum_column(PollStatus, 20))
 
     memberships: Mapped[list[WorkflowMembershipRow]] = relationship(
         back_populates="workflow", cascade="all, delete-orphan"
@@ -148,6 +164,8 @@ class DossierRow(Base):
 
     detail_complete: Mapped[bool] = mapped_column(default=False, nullable=False)
     detail_error: Mapped[str | None] = mapped_column(String(1000))
+    detail_fields_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    detail_fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -195,6 +213,62 @@ class WorkflowMembershipRow(Base):
 
     workflow: Mapped[WorkflowRow] = relationship(back_populates="memberships")
     dossier: Mapped[DossierRow] = relationship(back_populates="workflow_memberships")
+    occurrences: Mapped[list[WorkflowOccurrenceRow]] = relationship(
+        back_populates="membership",
+        cascade="all, delete-orphan",
+        order_by="WorkflowOccurrenceRow.occurrence_number",
+    )
+    work: Mapped[WorkflowWorkRow | None] = relationship(
+        back_populates="membership", cascade="all, delete-orphan", uselist=False
+    )
+
+
+class WorkflowOccurrenceRow(Base):
+    """Insert-only record of one appearance of a dossier in a workflow.
+
+    Database triggers (see the V2 migration) reject UPDATEs, so notification
+    history can never be rewritten by a later reappearance.
+    """
+
+    __tablename__ = "workflow_occurrences"
+    __table_args__ = (
+        UniqueConstraint("membership_id", "occurrence_number", name="uq_occurrence_membership_number"),
+        Index("ix_occurrence_workflow_dossier", "workflow_id", "dossier_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    membership_id: Mapped[int] = mapped_column(
+        ForeignKey("workflow_memberships.id", ondelete="CASCADE"), nullable=False
+    )
+    workflow_id: Mapped[int] = mapped_column(
+        ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False
+    )
+    dossier_id: Mapped[int] = mapped_column(
+        ForeignKey("dossiers.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    occurrence_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    origin: Mapped[OccurrenceOrigin] = mapped_column(_enum_column(OccurrenceOrigin, 20), nullable=False)
+    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    membership: Mapped[WorkflowMembershipRow] = relationship(back_populates="occurrences")
+
+
+class WorkflowWorkRow(Base):
+    """Shared work status, owned by a workflow membership (not the dossier)."""
+
+    __tablename__ = "workflow_work"
+
+    membership_id: Mapped[int] = mapped_column(
+        ForeignKey("workflow_memberships.id", ondelete="CASCADE"), primary_key=True
+    )
+    status: Mapped[WorkStatus] = mapped_column(
+        _enum_column(WorkStatus, 20), nullable=False, default=WorkStatus.TO_DO
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    membership: Mapped[WorkflowMembershipRow] = relationship(back_populates="work")
 
 
 class NotificationRow(Base):
@@ -208,6 +282,15 @@ class NotificationRow(Base):
         _enum_column(NotificationKind, 50), nullable=False, default=NotificationKind.NEW_AGREEMENT_DOSSIER
     )
     detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    workflow_id: Mapped[int | None] = mapped_column(
+        ForeignKey("workflows.id", ondelete="CASCADE"), index=True
+    )
+    workflow_occurrence_id: Mapped[int | None] = mapped_column(
+        ForeignKey("workflow_occurrences.id", ondelete="CASCADE"), index=True
+    )
+    workflow_event_id: Mapped[int | None] = mapped_column(
+        ForeignKey("workflow_events.id", ondelete="SET NULL")
+    )
 
     dossier: Mapped[DossierRow] = relationship(back_populates="notifications")
     reads: Mapped[list[NotificationReadRow]] = relationship(
@@ -256,6 +339,9 @@ class DossierNoteRow(Base):
     author_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     body: Mapped[str] = mapped_column(String(MAX_NOTE_LENGTH), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    workflow_membership_id: Mapped[int | None] = mapped_column(
+        ForeignKey("workflow_memberships.id", ondelete="SET NULL")
+    )
 
     dossier: Mapped[DossierRow] = relationship(back_populates="notes")
 
@@ -274,3 +360,129 @@ class PollRunRow(Base):
     pages_seen: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     details_failed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     error: Mapped[str | None] = mapped_column(String(1000))
+
+
+class SyncRunRow(Base):
+    """Parent record of one complete synchronization cycle."""
+
+    __tablename__ = "sync_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    portal_account_id: Mapped[int] = mapped_column(
+        ForeignKey("portal_accounts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    trigger: Mapped[SyncTrigger] = mapped_column(
+        _enum_column(SyncTrigger, 20), nullable=False, default=SyncTrigger.SCHEDULED
+    )
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[PollStatus] = mapped_column(_enum_column(PollStatus, 20), nullable=False)
+    workflows_total: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    workflows_complete: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    workflows_partial: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    workflows_auth_required: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    workflows_failed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    error: Mapped[str | None] = mapped_column(String(1000))
+
+    workflow_runs: Mapped[list[WorkflowPollRunRow]] = relationship(
+        back_populates="sync_run", cascade="all, delete-orphan"
+    )
+
+
+class WorkflowPollRunRow(Base):
+    """Independent outcome of one workflow inside a sync run."""
+
+    __tablename__ = "workflow_poll_runs"
+    __table_args__ = (Index("ix_workflow_poll_run_workflow", "workflow_id", "started_at"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sync_run_id: Mapped[int] = mapped_column(
+        ForeignKey("sync_runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    workflow_id: Mapped[int] = mapped_column(
+        ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False
+    )
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[PollStatus] = mapped_column(_enum_column(PollStatus, 20), nullable=False)
+    baseline: Mapped[bool] = mapped_column(default=False, nullable=False)
+    rows_seen: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    pages_seen: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    details_failed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    returned_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    changed_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    left_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    notifications_created: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    error: Mapped[str | None] = mapped_column(String(1000))
+
+    sync_run: Mapped[SyncRunRow] = relationship(back_populates="workflow_runs")
+
+
+class WorkflowEventRow(Base):
+    """Insert-only activity feed. Holds field names and fingerprints only."""
+
+    __tablename__ = "workflow_events"
+    __table_args__ = (
+        Index("ix_workflow_event_workflow_time", "workflow_id", "detected_at"),
+        Index("ix_workflow_event_dossier_time", "dossier_id", "detected_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    workflow_id: Mapped[int | None] = mapped_column(ForeignKey("workflows.id", ondelete="CASCADE"))
+    membership_id: Mapped[int | None] = mapped_column(
+        ForeignKey("workflow_memberships.id", ondelete="CASCADE")
+    )
+    occurrence_id: Mapped[int | None] = mapped_column(
+        ForeignKey("workflow_occurrences.id", ondelete="CASCADE")
+    )
+    dossier_id: Mapped[int | None] = mapped_column(ForeignKey("dossiers.id", ondelete="CASCADE"))
+    poll_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("workflow_poll_runs.id", ondelete="CASCADE")
+    )
+    kind: Mapped[WorkflowEventKind] = mapped_column(_enum_column(WorkflowEventKind, 40), nullable=False)
+    notification_class: Mapped[NotificationClass] = mapped_column(
+        _enum_column(NotificationClass, 20), nullable=False
+    )
+    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    changed_fields_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    before_fingerprints_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    after_fingerprints_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    message: Mapped[str | None] = mapped_column(String(500))
+
+
+class OutboxMessageRow(Base):
+    """Transactional outbox: written with reconciliation, processed afterwards."""
+
+    __tablename__ = "outbox_messages"
+    __table_args__ = (Index("ix_outbox_pending", "processed_at", "available_at"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    topic: Mapped[str] = mapped_column(String(60), nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_error: Mapped[str | None] = mapped_column(String(1000))
+
+
+class AiRunRow(Base):
+    """Audit of one optional AI request. Never holds credentials or browser state."""
+
+    __tablename__ = "ai_runs"
+    __table_args__ = (Index("ix_ai_run_subject", "subject_type", "subject_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    feature: Mapped[AiFeature] = mapped_column(_enum_column(AiFeature, 40), nullable=False)
+    subject_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    subject_id: Mapped[int | None] = mapped_column(Integer)
+    model: Mapped[str] = mapped_column(String(100), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(30), nullable=False)
+    context_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[AiRunStatus] = mapped_column(_enum_column(AiRunStatus, 20), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    result_json: Mapped[str | None] = mapped_column(Text)
+    error: Mapped[str | None] = mapped_column(String(500))
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))

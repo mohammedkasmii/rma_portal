@@ -21,8 +21,11 @@ def _enable_wal(dbapi_connection: sqlite3.Connection, connection_record: object)
 
 def create_engine_for(settings: Settings) -> Engine:
     settings.data_dir.mkdir(parents=True, exist_ok=True)
-    engine = create_engine(settings.database_url, future=True)
-    event.listen(engine, "connect", _enable_wal)
+    if settings.uses_sqlite:
+        engine = create_engine(settings.database_url, future=True)
+        event.listen(engine, "connect", _enable_wal)
+    else:
+        engine = create_engine(settings.database_url, future=True, pool_pre_ping=True)
     return engine
 
 

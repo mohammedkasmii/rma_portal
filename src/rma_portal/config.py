@@ -54,6 +54,10 @@ class Settings:
     headless_browser: bool = True
     session_cookie_name: str = "rma_portal_session"
     session_secret: str = ""
+    database_url_override: str = ""
+    """Full SQLAlchemy URL (``RMA_PORTAL_DATABASE_URL``). Empty means the
+    legacy single-file SQLite database under ``data_dir``; the production
+    Docker deployment sets a PostgreSQL URL."""
 
     @property
     def db_path(self) -> Path:
@@ -61,7 +65,11 @@ class Settings:
 
     @property
     def database_url(self) -> str:
-        return f"sqlite:///{self.db_path.as_posix()}"
+        return self.database_url_override or f"sqlite:///{self.db_path.as_posix()}"
+
+    @property
+    def uses_sqlite(self) -> bool:
+        return self.database_url.startswith("sqlite")
 
     @property
     def browser_profile_dir(self) -> Path:
@@ -116,5 +124,6 @@ def load_settings() -> Settings:
         session_verify_timeout_seconds=_env_int("RMA_PORTAL_SESSION_VERIFY_TIMEOUT_SECONDS", 45),
         headless_browser=_env_bool("RMA_PORTAL_HEADLESS_BROWSER", True),
         session_secret=os.environ.get("RMA_PORTAL_SESSION_SECRET", ""),
+        database_url_override=os.environ.get("RMA_PORTAL_DATABASE_URL", ""),
     )
     return settings
