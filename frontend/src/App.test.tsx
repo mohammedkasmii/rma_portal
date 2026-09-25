@@ -142,7 +142,7 @@ describe("dossier page acknowledgement", () => {
     const calls = dossierServer();
     renderApp(<App />, "/dossiers/10");
 
-    await screen.findByRole("heading", { name: /Dossier D-100/ });
+    await screen.findByRole("heading", { name: /D-100/ });
 
     expect(calls.some((c) => c.path.includes("/acknowledge"))).toBe(false);
   });
@@ -151,7 +151,7 @@ describe("dossier page acknowledgement", () => {
     const calls = dossierServer();
     renderApp(<App />, "/dossiers/10?membership=55");
 
-    await screen.findByRole("heading", { name: /Dossier D-100/ });
+    await screen.findByRole("heading", { name: /D-100/ });
 
     await waitFor(() => expect(calls.filter((c) => c.path === "/occurrences/77/acknowledge")).toHaveLength(1));
   });
