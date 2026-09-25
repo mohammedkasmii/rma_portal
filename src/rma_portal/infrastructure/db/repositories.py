@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from datetime import datetime
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from rma_portal.application.dto import DashboardRow, DossierDetails, QueueRow
@@ -23,6 +24,7 @@ from rma_portal.domain.models import (
     DossierDates,
     DossierNote,
     DossierWork,
+    DuplicateWorkflowError,
     Notification,
     PollRun,
     PortalAccount,
@@ -320,7 +322,10 @@ class SqlAlchemyWorkflowRepository:
             last_poll_status=workflow.last_poll_status,
         )
         self._session.add(row)
-        self._session.flush()
+        try:
+            self._session.flush()
+        except IntegrityError as exc:
+            raise DuplicateWorkflowError(workflow.key) from exc
         return _to_domain_workflow(row)
 
     def update_definition(self, workflow: Workflow) -> None:

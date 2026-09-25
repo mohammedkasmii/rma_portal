@@ -49,6 +49,7 @@ from rma_portal.domain.models import (
     WorkflowWork,
 )
 from rma_portal.domain.sync_rules import ExistingDossierState
+from rma_portal.domain.workflow_definition import FieldSpec, WorkflowDefinition
 
 
 class PasswordHasher(Protocol):
@@ -309,6 +310,16 @@ class DossierNoteRepository(Protocol):
     def add(self, dossier_id: int, author_id: int, body: str, created_at: datetime) -> DossierNote: ...
 
     def list_for_dossier(self, dossier_id: int) -> list[DossierNote]: ...
+
+
+class WorkflowCatalog(Protocol):
+    """The code-defined set of observable OmegaFlow workflows."""
+
+    def definitions(self) -> tuple[WorkflowDefinition, ...]: ...
+
+    def get(self, key: str) -> WorkflowDefinition | None: ...
+
+    def shared_detail_fields(self) -> tuple[FieldSpec, ...]: ...
 
 
 class WorkflowOccurrenceRepository(Protocol):

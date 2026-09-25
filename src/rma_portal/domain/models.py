@@ -354,3 +354,11 @@ class DuplicateUsernameError(Exception):
     def __init__(self, username: str) -> None:
         super().__init__(f"username {username!r} already exists")
         self.username = username
+
+
+class DuplicateWorkflowError(Exception):
+    """A workflow with the same (portal account, key) already exists."""
+
+    def __init__(self, key: str) -> None:
+        super().__init__(f"workflow {key!r} already exists")
+        self.key = key
