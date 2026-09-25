@@ -115,6 +115,9 @@ _ROWS_CHANGED_JS = """([rowsSelector, beforeIds]) => {
 }"""
 
 
+_VIEW_IDS_JS = "() => Array.from(document.querySelectorAll('[id^=\"view_\"]')).map(e => e.id)"
+
+
 class _StalePageResultError(RuntimeError):
     """A pagination page's completion wait passed, but its rows exactly
     match the previous page's -- OmegaFlow pages never legitimately repeat
@@ -459,7 +462,12 @@ class CamoufoxPortalReader:
             previous = current
 
     async def _wait_for_queue_view(
-        self, page: Any, root: str = _LEGACY_ROOT, *, require_table_header: bool = False
+        self,
+        page: Any,
+        root: str = _LEGACY_ROOT,
+        *,
+        require_table_header: bool = False,
+        require_selector: str | None = None,
     ) -> None:
         """Polls for the authenticated queue view instead of a single blind
         ``wait_for()`` -- right after navigation, Knack's page is often
@@ -476,14 +484,20 @@ class CamoufoxPortalReader:
 
         With ``require_table_header`` the table header must also be present:
         that is the positive evidence a queue with zero rows rendered, as
-        opposed to a container that is still loading.
+        opposed to a container that is still loading. ``require_selector`` (the
+        filter control of a filtered workflow) must be present inside the root:
+        a root that rendered without its controls is a scene that was not rebuilt.
         """
         deadline = time.monotonic() + _QUEUE_VIEW_TIMEOUT_SECONDS
         while True:
             await self._assert_authenticated()
-            if await is_authenticated_view_present(page, root) and (
-                not require_table_header
-                or await page.locator(f"{root} table thead th").count() > 0
+            if (
+                await is_authenticated_view_present(page, root)
+                and (
+                    not require_table_header
+                    or await page.locator(f"{root} table thead th").count() > 0
+                )
+                and (require_selector is None or await page.locator(require_selector).count() > 0)
             ):
                 return
             if time.monotonic() >= deadline:
@@ -644,31 +658,71 @@ class CamoufoxPortalReader:
         return WorkflowReadOutcome(definition.key, status, snapshot, error)
 
     async def _open_workflow_view(self, page: Any, definition: WorkflowDefinition) -> None:
-        """Navigates to the workflow's captured route and waits for its rendered view.
+        """Navigates to the workflow's captured route from a freshly rebuilt Knack scene.
 
-        A hash-only navigation to the route already displayed would neither
-        reload the scene nor reset pagination, so a second workflow on the same
-        route (the agreement variants, or the two Carence tables) first visits
-        the home route: every workflow then starts from a freshly rendered page 1.
+        Every workflow starts by visiting the home route, whatever the previous state
+        (about:blank, a queue on the same or another route, or a dossier detail page left
+        by detail enrichment): a hash-only jump between two Knack scenes may keep the old
+        scene, or leave a queue root without its filter controls, and pagination would not
+        restart at page 1. If the expected view does not render, one bounded recovery goes
+        through the home route again and reloads the target; a second failure is final.
 
-        Readiness is two-phase for a filtered workflow: here only the authenticated
-        root/container is required (its table appears after the filter is submitted,
-        see ``read_workflow``); an unfiltered workflow still requires its table header.
+        Readiness is two-phase for a filtered workflow: here the authenticated root *and*
+        the filter control are required (the table only appears once the filter is
+        submitted, see ``read_workflow``); an unfiltered workflow requires its table header.
         """
-        if self._current_route == definition.route:
-            await page.goto(
-                workflow_url(self._base_url, _HOME_ROUTE),
-                wait_until="domcontentloaded",
-                timeout=60_000,
-            )
+        spec = definition.filter
+        control = f"{definition.root_selector} {spec.control_selector}" if spec else None
+        for attempt in (1, 2):
+            await self._goto_route_via_home(page, definition.route, reload=attempt == 2)
+            try:
+                await self._wait_for_queue_view(
+                    page,
+                    definition.root_selector,
+                    require_table_header=spec is None,
+                    require_selector=control,
+                )
+                return
+            except PortalReadError as exc:
+                diagnostics = await self._queue_diagnostics(page, definition)
+                if attempt == 2:
+                    logger.error("stage=workflow_navigation outcome=FAILED %s", diagnostics)
+                    raise PortalReadError(f"{exc} Diagnostic : {diagnostics}") from exc
+                logger.warning(
+                    "stage=workflow_navigation outcome=RETRY %s", diagnostics
+                )
+
+    async def _goto_route_via_home(self, page: Any, route: str, *, reload: bool = False) -> None:
+        self._current_route = None
         await page.goto(
-            workflow_url(self._base_url, definition.route),
-            wait_until="domcontentloaded",
-            timeout=60_000,
+            workflow_url(self._base_url, _HOME_ROUTE), wait_until="domcontentloaded", timeout=60_000
         )
-        self._current_route = definition.route
-        await self._wait_for_queue_view(
-            page, definition.root_selector, require_table_header=definition.filter is None
+        await page.goto(
+            workflow_url(self._base_url, route), wait_until="domcontentloaded", timeout=60_000
+        )
+        if reload:
+            await page.reload(wait_until="domcontentloaded", timeout=60_000)
+        self._current_route = route
+
+    async def _queue_diagnostics(self, page: Any, definition: WorkflowDefinition) -> str:
+        """Safe facts about a view that did not render: no HTML, cookies or customer data."""
+        root = definition.root_selector
+        spec = definition.filter
+        try:
+            root_found = await page.locator(root).count() > 0
+            filter_found = (
+                None if spec is None else await page.locator(f"{root} {spec.control_selector}").count() > 0
+            )
+            header_found = await page.locator(f"{root} table thead th").count() > 0
+            view_ids = await page.evaluate(_VIEW_IDS_JS)
+            url = strip_query(page.url) if isinstance(getattr(page, "url", None), str) else "?"
+        except Exception as exc:  # noqa: BLE001 - diagnostics must never mask the real failure
+            return f"workflow={definition.key} (diagnostic indisponible: {type(exc).__name__})"
+        ids = sorted(str(v) for v in view_ids) if isinstance(view_ids, list) else []
+        return (
+            f"workflow={definition.key} route={definition.route} url={url} root={root} "
+            f"root_present={root_found} filter_present={filter_found} "
+            f"header_present={header_found} views={ids}"
         )
 
     async def read_dossier_detail_fields(

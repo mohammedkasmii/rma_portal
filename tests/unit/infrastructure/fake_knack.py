@@ -41,7 +41,12 @@ class FakeQueue:
     header_after_filter: bool = False
     """The shared agreement view: its table (and header) only render once the filter is submitted."""
     login_required: bool = False
+    controls_missing_loads: int = 0
+    """Scene builds (navigation or reload) that render the root without its filter controls."""
     # runtime state
+    controls_ready: bool = True
+    root_ready: bool = True
+    missing_left: int = -1
     page_index: int = 0
     active_filter: str | None = None
     pending_filter: str = ""
@@ -59,10 +64,17 @@ class FakeQueue:
             return False
         return not self.header_after_filter or self.active_filter is not None
 
-    def reset(self) -> None:
+    def reset(self, *, dirty: bool = False) -> None:
+        """A (re)built scene. ``dirty`` = reached straight from a dossier detail page."""
+        if self.missing_left < 0:
+            self.missing_left = self.controls_missing_loads
         self.page_index = 0
         self.active_filter = None
         self.pending_filter = ""
+        self.root_ready = not dirty
+        self.controls_ready = not dirty and self.missing_left <= 0
+        if self.missing_left > 0:
+            self.missing_left -= 1
 
     def rows(self) -> list[dict]:
         pages = self.visible_pages()
@@ -141,6 +153,10 @@ class FakeKnackPage:
         self.clicks: list[str] = []
         self.detail_visits: list[str] = []
         self.login_shown = False
+        self.reload_calls = 0
+        self.url = "about:blank"
+        self.detail_scene_bug = True
+        """Live behaviour: a queue reached straight from a detail page keeps a stale scene."""
 
     # -- helpers ------------------------------------------------------------------------------
     @staticmethod
@@ -170,12 +186,14 @@ class FakeKnackPage:
         queue = self.queue_for_selector(selector)
         if queue is None:
             return 0
+        if not queue.root_ready:
+            return 0
         if selector == f"#{queue.definition.view_id}":
             return 1
         if selector.endswith("table thead th"):
             return len(queue.definition.list_fields) if queue.header_visible else 0
         if "kn-conn" in selector or "kn-search_form" in selector:
-            return 1 if queue.definition.filter is not None else 0
+            return 1 if queue.definition.filter is not None and queue.controls_ready else 0
         return 0
 
     def click(self, selector: str) -> None:
@@ -207,19 +225,27 @@ class FakeKnackPage:
 
     async def goto(self, url: str, wait_until: str | None = None, timeout: float | None = None) -> None:
         self.goto_calls.append(url)
+        self.url = url
         route = self._route_of(url)
         marker = self.site.details_route_prefix
         if marker in route:
             record_id = route.rstrip("/").rsplit("/", 1)[-1]
             self.current_detail = record_id
+            self.current_route = route  # the SPA now shows the dossier scene
             self.detail_visits.append(record_id)
             if record_id in self.site.detail_failures:
                 raise FakeTimeoutError("detail page did not render")
             return
+        came_from_detail = self.current_detail is not None
         self.current_detail = None
         if route == self.current_route:
             return  # hash-only navigation to the displayed route: no reload, state persists
         self.current_route = route
+        for queue in self.queues():
+            queue.reset(dirty=came_from_detail and self.detail_scene_bug)
+
+    async def reload(self, wait_until: str | None = None, timeout: float | None = None) -> None:
+        self.reload_calls += 1
         for queue in self.queues():
             queue.reset()
 
@@ -231,6 +257,8 @@ class FakeKnackPage:
         return render_page(*(queue.render() for queue in self.queues()))
 
     async def evaluate(self, script: str, arg: Any = None) -> Any:
+        if "id^=" in script:  # the reader's rendered-view-ids diagnostic
+            return [q.definition.view_id for q in self.queues() if q.root_ready]
         match = re.search(r"#(view_\d+)", script)
         if match:
             for queue in self.queues():

@@ -74,7 +74,7 @@ async def test_reads_every_page_dynamically_and_deduplicates_by_record_id():
     assert outcome.snapshot.pages_seen == 3
     ids = [row.record_id for row in outcome.snapshot.rows]
     assert len(ids) == len(set(ids)) == 4 + 4 + 3
-    assert page.goto_calls == [workflow_url(BASE_URL, photos.route)]
+    assert page.goto_calls == [workflow_url(BASE_URL, "#accueil/"), workflow_url(BASE_URL, photos.route)]
     assert [call[1] for call in page.select_calls] == ["2", "3"]
 
 
@@ -121,9 +121,9 @@ def _spy_readiness(reader: CamoufoxPortalReader) -> list[tuple]:
     events: list[tuple] = []
     wait, apply = reader._wait_for_queue_view, reader._apply_filter
 
-    async def spy_wait(page, *args, require_table_header=False):
-        events.append(("wait", require_table_header))
-        await wait(page, *args, require_table_header=require_table_header)
+    async def spy_wait(page, *args, require_table_header=False, **kwargs):
+        events.append(("wait", require_table_header, kwargs.get("require_selector") is not None))
+        await wait(page, *args, require_table_header=require_table_header, **kwargs)
 
     async def spy_apply(*args, **kwargs):
         events.append(("filter",))
@@ -157,7 +157,8 @@ async def test_the_filter_is_applied_before_the_table_header_is_required():
 
     await reader.read_workflow(definition)
 
-    assert events == [("wait", False), ("filter",), ("wait", True)]
+    # root + filter control first (no header yet), then the header once the filter is submitted
+    assert events == [("wait", False, True), ("filter",), ("wait", True, False)]
 
 
 @pytest.mark.asyncio
@@ -206,7 +207,7 @@ async def test_an_unfiltered_workflow_still_requires_the_table_header_during_nav
     with pytest.raises(camoufox_reader.PortalReadError):
         await reader._open_workflow_view(page, definition)
 
-    assert events == [("wait", True)]
+    assert events == [("wait", True, False)] * 2  # the header stays required; one bounded retry
 
 
 @pytest.mark.asyncio
@@ -220,6 +221,124 @@ async def test_auth_required_is_unchanged_for_a_filtered_workflow():
 
     assert outcome.status is PollStatus.AUTH_REQUIRED
     assert outcome.snapshot.rows == ()
+
+
+def _detail_ref(record_id: str = "rec-detail"):
+    return PortalDossierRef(
+        record_id=record_id,
+        details_href=f"#view-dossier-details/{record_id}/",
+    )
+
+
+async def _enrich_one_detail(reader: CamoufoxPortalReader, site: FakeSite, record_id: str = "rec-detail"):
+    site.details[record_id] = {}
+    await reader.read_dossier_detail_fields(_detail_ref(record_id), SHARED_DETAIL_FIELDS)
+    assert reader._current_route is None  # the browser is left on a dossier page
+
+
+@pytest.mark.asyncio
+async def test_garage_then_detail_enrichment_then_procedure_normale_still_finds_its_filter():
+    garage = _definition("agreement_garage")
+    normal = _definition("agreement_normal")
+    queue = FakeQueue(
+        garage,
+        by_filter={garage.filter.value: [_rows("g", 2)], normal.filter.value: [_rows("n", 3)]},
+        header_after_filter=True,
+    )
+    site = FakeSite({garage.route: [queue]})
+    reader, page = _reader(site)
+
+    first = await reader.read_workflow(garage)
+    await _enrich_one_detail(reader, site)
+    second = await reader.read_workflow(normal)
+
+    assert first.status is PollStatus.COMPLETE
+    assert second.status is PollStatus.COMPLETE
+    assert len(second.snapshot.rows) == 3
+    assert page.goto_calls[-2:] == [workflow_url(BASE_URL, "#accueil/"), workflow_url(BASE_URL, garage.route)]
+
+
+@pytest.mark.asyncio
+async def test_sequential_shared_route_agreement_filters_each_start_from_a_fresh_scene():
+    keys = ["agreement_garage", "agreement_normal", "agreement_appreciation", "agreement_collegial_cid", "agreement_hifad"]
+    definitions = [_definition(key) for key in keys]
+    queue = FakeQueue(
+        definitions[0],
+        by_filter={d.filter.value: [_rows(d.key[10:13], 2)] for d in definitions},
+        header_after_filter=True,
+    )
+    site = FakeSite({definitions[0].route: [queue]})
+    reader, _ = _reader(site)
+
+    outcomes = {}
+    for definition in definitions:
+        outcomes[definition.key] = await reader.read_workflow(definition)
+        await _enrich_one_detail(reader, site, f"rec-{definition.key}")
+
+    assert {k: o.status for k, o in outcomes.items()} == dict.fromkeys(keys, PollStatus.COMPLETE)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", ["hifad_search", "report_pending"])
+async def test_a_queue_read_right_after_a_detail_page_is_reached_through_the_home_route(key):
+    definition = _definition(key)
+    rows = [_rows("x", 2)]
+    queue = FakeQueue(definition, pages=rows, by_filter={definition.filter.value: rows} if definition.filter else {})
+    site = FakeSite({definition.route: [queue]})
+    reader, page = _reader(site)
+    await _enrich_one_detail(reader, site)
+
+    outcome = await reader.read_workflow(definition)
+
+    assert outcome.status is PollStatus.COMPLETE
+    assert len(outcome.snapshot.rows) == 2
+    assert page.goto_calls[-2] == workflow_url(BASE_URL, "#accueil/")
+    assert page.reload_calls == 0  # no recovery was needed
+
+
+@pytest.mark.asyncio
+async def test_one_bounded_recovery_reloads_the_target_when_the_filter_control_is_missing():
+    definition = _definition("agreement_normal")
+    queue = FakeQueue(
+        definition,
+        by_filter={definition.filter.value: [_rows("n", 2)]},
+        header_after_filter=True,
+        controls_missing_loads=1,  # the first scene build renders the root without its controls
+    )
+    reader, page = _reader(FakeSite({definition.route: [queue]}))
+
+    outcome = await reader.read_workflow(definition)
+
+    assert outcome.status is PollStatus.COMPLETE
+    assert page.reload_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_a_second_failure_is_final_after_exactly_one_retry_with_safe_diagnostics(caplog):
+    definition = _definition("agreement_normal")
+    queue = FakeQueue(
+        definition,
+        by_filter={definition.filter.value: [_rows("n", 2)]},
+        header_after_filter=True,
+        controls_missing_loads=99,
+    )
+    reader, page = _reader(FakeSite({definition.route: [queue]}))
+    caplog.set_level("INFO")
+
+    outcome = await reader.read_workflow(definition)
+
+    assert outcome.status is PollStatus.FAILED
+    assert page.reload_calls == 1  # bounded: one recovery, never a loop
+    assert page.goto_calls.count(workflow_url(BASE_URL, "#accueil/")) == 2
+    error = outcome.error or ""
+    assert "Délai dépassé" in error
+    assert f"workflow={definition.key}" in error
+    assert f"route={definition.route}" in error
+    assert f"root={definition.root_selector}" in error
+    assert "root_present=True" in error and "filter_present=False" in error and "header_present=False" in error
+    assert "views=['view_1874']" in error
+    assert "?" not in error.split("Diagnostic :")[1].split("url=")[1].split(" ")[0]  # URL carries no query
+    assert any("outcome=RETRY" in r.message for r in caplog.records)
 
 
 @pytest.mark.asyncio
@@ -314,11 +433,10 @@ async def test_agreement_variants_share_a_route_and_each_gets_its_own_filter_and
     # Exact captured procedure option values, applied on the hidden Chosen select.
     filter_calls = [value for selector, value in page.select_calls if "kn-conn" in selector]
     assert filter_calls == [garage.filter.value, normal.filter.value, hifad.filter.value]
-    # A second workflow on the displayed route detours through the home route so the scene
-    # is genuinely re-rendered instead of relying on a no-op hash navigation.
+    # Every workflow goes home first so its scene is genuinely rebuilt, never a no-op hash jump.
     home = workflow_url(BASE_URL, "#accueil/")
     route = workflow_url(BASE_URL, garage.route)
-    assert page.goto_calls == [route, home, route, home, route]
+    assert page.goto_calls == [home, route, home, route, home, route]
 
 
 @pytest.mark.asyncio
