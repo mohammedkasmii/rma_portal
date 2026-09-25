@@ -5,6 +5,8 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { vi } from "vitest";
 import type { ItemView, MembershipView, User, WorkflowView } from "../api/types";
 import { AuthProvider } from "../auth";
+import { ToastProvider } from "../components/ui/Toast";
+import { ThemeProvider } from "../theme";
 
 export interface Call {
   method: string;
@@ -46,12 +48,16 @@ export function renderApp(ui: ReactElement, route = "/") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={[route]}>
-        <AuthProvider>
-          {ui}
-          <LocationProbe />
-        </AuthProvider>
-      </MemoryRouter>
+      <ThemeProvider>
+        <ToastProvider>
+          <MemoryRouter initialEntries={[route]}>
+            <AuthProvider>
+              {ui}
+              <LocationProbe />
+            </AuthProvider>
+          </MemoryRouter>
+        </ToastProvider>
+      </ThemeProvider>
     </QueryClientProvider>,
   );
 }

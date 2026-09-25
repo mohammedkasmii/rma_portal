@@ -41,17 +41,19 @@ describe("routing and roles", () => {
     renderApp(<App />, "/admin/users");
 
     expect(await screen.findByRole("heading", { name: "Utilisateurs" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /Session OmegaFlow/ })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Connexion OmegaFlow/ })).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole("button", { name: /Devis et photos/ }));
     expect(screen.getByRole("link", { name: /File désactivée/ })).toBeInTheDocument();
   });
 
-  it("hides disabled workflows from employees and shows the validation badge in the navigation", async () => {
+  it("hides disabled workflows from employees and keeps the navigation free of validation badges", async () => {
     server(employee, () => ({ json: {} }));
     renderApp(<App />, "/inbox");
 
+    await userEvent.click(await screen.findByRole("button", { name: /Devis et photos/ }));
     await screen.findByRole("link", { name: /Dossiers en instance Photos/ });
     expect(screen.queryByRole("link", { name: /File désactivée/ })).not.toBeInTheDocument();
-    expect(screen.getAllByText("À valider sur site").length).toBeGreaterThan(0);
+    expect(screen.queryByText("À valider sur site")).not.toBeInTheDocument();
   });
 
   it("returns to the login page when the API answers 401 mid-session", async () => {

@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { useAuth } from "./auth";
-import { Layout } from "./components/Layout";
+import { AppShell } from "./components/shell/AppShell";
 import { AdminHealth, AdminSession, AdminUsers, AdminWorkflows } from "./pages/Admin";
 import { Dashboard } from "./pages/Dashboard";
 import { DossierPage } from "./pages/DossierPage";
@@ -37,7 +37,7 @@ export function App() {
       <Route
         element={
           <RequireAuth>
-            <Layout />
+            <AppShell />
           </RequireAuth>
         }
       >
