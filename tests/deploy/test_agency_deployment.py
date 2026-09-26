@@ -1,0 +1,720 @@
+"""The agency-server deployment package: Compose definition, scripts and image transfer.
+
+Nothing here touches a server or builds an image. Compose checks use `docker compose config`
+(no daemon needed) with non-secret test values; script checks run the real scripts with a fake
+`docker` on PATH that records its calls, so they prove *what would run*, not what a server does.
+"""
+
+from __future__ import annotations
+
+import copy
+import importlib.util
+import json
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).parents[2]
+COMPOSE = ROOT / "compose.agency.yaml"
+ENV_EXAMPLE = ROOT / ".env.agency.example"
+AGENCY = ROOT / "scripts" / "agency"
+SCRIPTS = sorted(AGENCY.glob("*.sh"))
+STORAGE = "/data/rma-portal"
+VERSION = "0123456789ab"
+COMMIT = VERSION + "cdef0123456789abcdef0123456789ab"[: 40 - 12]
+
+needs_docker = pytest.mark.skipif(shutil.which("docker") is None, reason="docker CLI not installed")
+
+
+def _find_bash() -> str | None:
+    """A usable bash (on Windows `bash` may be a WSL launcher with no distribution installed)."""
+    candidates = [shutil.which("bash"), "C:/Program Files/Git/bin/bash.exe"]
+    for candidate in candidates:
+        if not candidate or not Path(candidate).exists():
+            continue
+        try:
+            if (
+                subprocess.run(
+                    [candidate, "-c", "exit 0"], capture_output=True, timeout=20
+                ).returncode
+                == 0
+            ):
+                return candidate
+        except OSError, subprocess.SubprocessError:
+            continue
+    return None
+
+
+_FOUND_BASH = _find_bash()
+BASH: str = _FOUND_BASH or "bash"
+
+
+def _working_bash() -> bool:
+    return _FOUND_BASH is not None
+
+
+needs_bash = pytest.mark.skipif(not _working_bash(), reason="no working bash available")
+
+# Destructive or out-of-scope operations that no agency script/definition may contain.
+FORBIDDEN = [
+    r"docker\s+(system|image|volume|network|builder|container)\s+prune",
+    r"down\s+(-\w*v|--volumes)",
+    r"volume\s+rm",
+    r"\bnetwork\s+rm\s",
+    r"(systemctl|service)\s+(\S+\s+)?restart\s+(\S+\s+)?docker|systemctl\s+restart\s+docker",
+    r"daemon\.json",
+    r"apt(-get)?\s+(install|upgrade|remove|purge|dist-upgrade)",
+    r"\bufw\b",
+    r"apache|a2ensite|a2enmod",
+    r"\breboot\b|shutdown\s+-r",
+    r"privileged\s*:\s*true|--privileged",
+    r"network_mode\s*:\s*host|--net(work)?[ =]host",
+    r"docker\.sock",
+    r"docker\s+compose\s+[^\n]*\bbuild\b|docker\s+build",
+    r"docker\s+compose\s+[^\n]*\bpull\b|docker\s+pull",
+    r"crontab|systemd|\.timer\b|/etc/cron",
+]
+# Only the exporter (which runs on the validated VM, never on the server) may build/pull.
+BUILD_EXEMPT = {"export-images.sh"}
+
+
+def _strip_comments(text: str) -> str:
+    return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+
+
+def _test_env(tmp_path: Path, **overrides: str) -> Path:
+    values = {
+        "RMA_VERSION": VERSION,
+        "POSTGRES_PASSWORD": "test-only-postgres-value",
+        "RMA_SESSION_SECRET": "test-only-session-value-0123456789abcdef",
+        "RMA_VNC_PASSWORD": "testvnc1",
+    }
+    values.update(overrides)
+    lines = []
+    for line in ENV_EXAMPLE.read_text(encoding="utf-8").splitlines():
+        key = line.split("=", 1)[0]
+        if "=" in line and not line.startswith("#") and key in values:
+            continue
+        lines.append(line)
+    lines += [f"{k}={v}" for k, v in values.items()]
+    env = tmp_path / "test.env"
+    env.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return env
+
+
+def _clean_env() -> dict[str, str]:
+    env = {
+        k: v for k, v in os.environ.items() if not k.startswith(("POSTGRES_", "RMA_", "COMPOSE_"))
+    }
+    env["MSYS_NO_PATHCONV"] = "1"  # Git-Bash on Windows must not rewrite /data/... arguments
+    return env
+
+
+def _compose(env_file: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["docker", "compose", "--env-file", str(env_file), "-f", str(COMPOSE), *args],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=_clean_env(),
+    )
+
+
+@pytest.fixture(scope="module")
+def stack(tmp_path_factory) -> dict:
+    if shutil.which("docker") is None:
+        pytest.skip("docker CLI not installed")
+    env = _test_env(tmp_path_factory.mktemp("agency"))
+    result = _compose(env, "config", "--format", "json")
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def _load_audit():
+    spec = importlib.util.spec_from_file_location("compose_audit", AGENCY / "compose_audit.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["compose_audit"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+AUDIT_ARGS = {"root": STORAGE, "web": ("192.168.1.32", "8480"), "novnc": ("127.0.0.1", "6081")}
+
+
+# --- Compose definition ---------------------------------------------------------------------------------
+
+
+@needs_docker
+def test_agency_compose_resolves_as_project_rma_portal(stack):
+    assert stack["name"] == "rma-portal"
+    assert set(stack["services"]) == {"db", "migrate", "api", "worker", "web", "browser"}
+    assert list(stack["networks"]) == ["rma-portal-net"]
+    for name, service in stack["services"].items():
+        assert service["container_name"] == f"rma-portal-{name}"
+        assert list(service["networks"]) == ["rma-portal-net"]
+    assert "wexia" not in json.dumps(stack).lower()
+    assert "shexpert" not in json.dumps(stack).lower()
+    assert "supabase" not in json.dumps(stack).lower()
+
+
+@needs_docker
+def test_only_web_and_browser_publish_and_only_on_the_expected_addresses(stack):
+    services = stack["services"]
+    for name in ("db", "migrate", "api", "worker"):
+        assert not services[name].get("ports"), f"{name} must not publish a port"
+    (web,) = services["web"]["ports"]
+    (novnc,) = services["browser"]["ports"]
+    assert (web["host_ip"], web["published"], web["target"]) == ("192.168.1.32", "8480", 8080)
+    assert (novnc["host_ip"], novnc["published"], novnc["target"]) == ("127.0.0.1", "6081", 6080)
+    assert "0.0.0.0" not in json.dumps([web, novnc])
+    assert "100." not in web["host_ip"]  # never the Tailscale address
+
+
+@needs_docker
+def test_bind_addresses_follow_the_environment(tmp_path):
+    env = _test_env(
+        tmp_path, RMA_WEB_BIND_IP="10.1.2.3", RMA_WEB_PORT="9000", RMA_NOVNC_PORT="9001"
+    )
+    config = json.loads(_compose(env, "config", "--format", "json").stdout)
+    assert config["services"]["web"]["ports"][0]["host_ip"] == "10.1.2.3"
+    assert config["services"]["web"]["ports"][0]["published"] == "9000"
+    assert config["services"]["browser"]["ports"][0]["published"] == "9001"
+
+
+@needs_docker
+def test_every_persistent_mount_is_an_explicit_bind_under_the_storage_root(stack):
+    assert not stack.get("volumes"), "no named volumes may remain"
+    expected = {
+        "db": {"postgres": "/var/lib/postgresql/data"},
+        "migrate": {"app-data": "/var/lib/rma-portal", "logs": "/var/log/rma-portal"},
+        "api": {"app-data": "/var/lib/rma-portal", "logs": "/var/log/rma-portal"},
+        "worker": {
+            "app-data": "/var/lib/rma-portal",
+            "logs": "/var/log/rma-portal",
+            "browser-profile": "/var/lib/rma-poc/profile",
+            "session-state": "/var/lib/rma-poc/state",
+        },
+        "browser": {
+            "browser-profile": "/var/lib/rma-poc/profile",
+            "session-state": "/var/lib/rma-poc/state",
+        },
+        "web": {},
+    }
+    for name, mounts in expected.items():
+        got = {}
+        for volume in stack["services"][name].get("volumes", []):
+            assert volume["type"] == "bind", f"{name}: {volume}"
+            assert volume["bind"]["create_host_path"] is False
+            assert volume["source"].startswith(STORAGE + "/")
+            assert "/var/lib/docker" not in volume["source"]
+            got[volume["source"].removeprefix(STORAGE + "/")] = volume["target"]
+        assert got == mounts, name
+
+
+@needs_docker
+def test_every_service_has_limits_and_bounded_logs_and_long_running_ones_health_and_restart(stack):
+    limits = {
+        "db": (1, 2 << 30, 256),
+        "migrate": (1, 1 << 30, 256),
+        "api": (1, 1 << 30, 256),
+        "worker": (2, 3 << 30, 512),
+        "browser": (2, 3 << 30, 512),
+        "web": (0.5, 256 << 20, 128),
+    }
+    for name, (cpus, memory, pids) in limits.items():
+        service = stack["services"][name]
+        assert float(service["cpus"]) == cpus, name
+        assert int(service["mem_limit"]) == memory, name
+        assert int(service["memswap_limit"]) == memory, name  # no swap use
+        assert int(service["pids_limit"]) == pids, name
+        assert service["logging"] == {
+            "driver": "json-file",
+            "options": {"max-size": "10m", "max-file": "5"},
+        }
+        if name != "migrate":
+            assert service["restart"] == "unless-stopped"
+            assert service["healthcheck"]["test"]
+            assert int(service["mem_reservation"]) < int(service["mem_limit"])
+    for name in ("worker", "browser"):
+        assert int(stack["services"][name]["shm_size"]) == 1 << 30
+
+
+@needs_docker
+def test_containers_stay_hardened(stack):
+    for name, service in stack["services"].items():
+        assert "ALL" in service["cap_drop"], name
+        assert "no-new-privileges:true" in service["security_opt"], name
+        assert not service.get("privileged"), name
+        assert service.get("network_mode") != "host", name
+        assert service.get("pid") != "host" and service.get("ipc") != "host", name
+        assert "docker.sock" not in json.dumps(service.get("volumes", [])), name
+        assert not service.get("build"), f"{name}: production never builds"
+        assert service["pull_policy"] == "never", name
+    assert set(stack["services"]["db"]["cap_add"]) == {
+        "CHOWN",
+        "DAC_OVERRIDE",
+        "FOWNER",
+        "SETGID",
+        "SETUID",
+    }
+    assert set(stack["services"]["web"]["cap_add"]) == {"CHOWN", "SETGID", "SETUID"}
+    for name in ("api", "worker", "browser", "migrate"):
+        assert not stack["services"][name].get("cap_add"), name
+    assert stack["services"]["api"]["read_only"] and stack["services"]["web"]["read_only"]
+
+
+@needs_docker
+def test_images_are_immutable_and_share_one_version(stack):
+    images = {n: s["image"] for n, s in stack["services"].items()}
+    assert images == {
+        "db": f"rma-portal-postgres:{VERSION}",
+        "web": f"rma-portal-web:{VERSION}",
+        "migrate": f"rma-portal:{VERSION}",
+        "api": f"rma-portal:{VERSION}",
+        "worker": f"rma-portal:{VERSION}",
+        "browser": f"rma-portal:{VERSION}",
+    }
+    text = COMPOSE.read_text(encoding="utf-8")
+    assert ":latest" not in text and "2.0.0" not in text
+
+
+@needs_docker
+@pytest.mark.parametrize(
+    "variable",
+    [
+        "RMA_VERSION",
+        "POSTGRES_PASSWORD",
+        "RMA_SESSION_SECRET",
+        "RMA_VNC_PASSWORD",
+        "RMA_WEB_BIND_IP",
+        "RMA_STORAGE_ROOT",
+    ],
+)
+def test_mandatory_values_have_no_default_and_fail_loudly(tmp_path, variable):
+    env = _test_env(tmp_path, **{variable: ""})
+    result = _compose(env, "config", "-q")
+    assert result.returncode != 0
+    assert variable in result.stderr
+
+
+@needs_docker
+def test_ai_is_disabled_and_polling_is_hourly_by_default(stack):
+    worker_env = stack["services"]["worker"]["environment"]
+    assert worker_env["RMA_PORTAL_OLLAMA_ENABLED"] == "false"
+    assert worker_env["RMA_PORTAL_POLL_INTERVAL_SECONDS"] == "3600"
+    assert worker_env["RMA_PORTAL_COOKIE_SECURE"] == "false"
+
+
+def test_env_example_documents_every_variable_and_holds_no_secret():
+    compose = COMPOSE.read_text(encoding="utf-8")
+    used = set(re.findall(r"\$\{([A-Z][A-Z0-9_]+)", compose))
+    documented = {
+        line.split("=", 1)[0]
+        for line in ENV_EXAMPLE.read_text(encoding="utf-8").splitlines()
+        if "=" in line and not line.startswith("#")
+    }
+    assert used <= documented, sorted(used - documented)
+    values = dict(
+        line.split("=", 1)
+        for line in ENV_EXAMPLE.read_text(encoding="utf-8").splitlines()
+        if "=" in line and not line.startswith("#")
+    )
+    for secret in ("POSTGRES_PASSWORD", "RMA_SESSION_SECRET", "RMA_VNC_PASSWORD", "RMA_VERSION"):
+        assert values[secret] == "", f"{secret} must be empty in the example"
+    assert values["RMA_STORAGE_ROOT"] == "/data/rma-portal"
+    assert values["RMA_WEB_BIND_IP"] == "192.168.1.32" and values["RMA_WEB_PORT"] == "8480"
+    assert values["RMA_NOVNC_BIND_IP"] == "127.0.0.1" and values["RMA_NOVNC_PORT"] == "6081"
+    assert values["RMA_PUBLIC_ORIGIN"] == "http://192.168.1.32:8480"
+    assert values["RMA_NOVNC_URL"] == "http://127.0.0.1:6081/vnc.html"
+    assert values["RMA_COOKIE_SECURE"] == "false" and values["RMA_OLLAMA_ENABLED"] == "false"
+    assert (
+        values["RMA_POLL_INTERVAL_SECONDS"] == "3600"
+        and values["RMA_MAX_DETAIL_READS_PER_CYCLE"] == "60"
+    )
+    assert values["RMA_TIMEZONE"] == "Africa/Casablanca"
+
+
+def test_the_validated_vm_definition_is_unchanged():
+    if shutil.which("git") is None:
+        pytest.skip("git not installed")
+    diff = subprocess.run(
+        ["git", "diff", "--quiet", "ac386ac", "--", "compose.prod.yaml", ".env.example", "docker"],
+        cwd=ROOT,
+        capture_output=True,
+    )
+    if diff.returncode not in (0, 1):
+        pytest.skip("base commit ac386ac not available")
+    assert diff.returncode == 0, "compose.prod.yaml / .env.example / docker/ must stay untouched"
+
+
+# --- compose audit helper (what preflight relies on) ------------------------------------------------------
+
+
+@needs_docker
+def test_audit_accepts_the_resolved_stack_and_rejects_each_violation(stack):
+    audit = _load_audit().audit
+    assert [level for level, _ in audit(stack, **AUDIT_ARGS)] == ["OK"]
+
+    def broken(mutate):
+        config = copy.deepcopy(stack)
+        mutate(config)
+        return [m for level, m in audit(config, **AUDIT_ARGS) if level == "FAIL"]
+
+    assert broken(
+        lambda c: c["services"]["api"].update(ports=[{"target": 8765, "published": "8765"}])
+    )
+    assert broken(lambda c: c["services"]["web"]["ports"][0].update(host_ip="0.0.0.0"))
+    assert broken(lambda c: c["services"]["browser"]["ports"][0].update(host_ip="192.168.1.32"))
+    assert broken(lambda c: c["services"]["db"].update(privileged=True))
+    assert broken(lambda c: c["services"]["worker"].update(network_mode="host"))
+    assert broken(lambda c: c["services"]["worker"].pop("pids_limit"))
+    assert broken(lambda c: c["services"]["worker"].update(cap_drop=[]))
+    assert broken(
+        lambda c: c["services"]["worker"]["volumes"].append(
+            {"type": "bind", "source": "/var/run/docker.sock", "target": "/x"}
+        )
+    )
+    assert broken(lambda c: c["services"]["db"]["volumes"][0].update(source="/var/lib/docker/pg"))
+    assert broken(lambda c: c["services"]["worker"].update(image="rma-portal:latest"))
+    assert broken(
+        lambda c: c["services"]["worker"]["environment"].update(RMA_PORTAL_OLLAMA_ENABLED="true")
+    )
+    assert broken(lambda c: c.update(volumes={"pgdata": {}}))
+
+
+# --- scripts ----------------------------------------------------------------------------------------------------
+
+
+@needs_bash
+@pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
+def test_scripts_are_valid_lf_bash_and_free_of_forbidden_operations(script):
+    subprocess.run([BASH, "-n", str(script)], check=True, timeout=30)
+    raw = script.read_bytes()
+    assert b"\r" not in raw
+    text = script.read_text(encoding="utf-8")
+    assert text.startswith("#!/usr/bin/env bash")
+    assert "set -euo pipefail" in text or script.name in {"lib.sh", "preflight.sh"}
+    code = _strip_comments(text)
+    for pattern in FORBIDDEN:
+        if script.name in BUILD_EXEMPT and re.search("build|pull", pattern):
+            continue
+        assert not re.search(pattern, code, re.IGNORECASE), f"{script.name} matches {pattern!r}"
+    assert not re.search(r"\b(chown|chmod)\s+(-\w*R|--recursive)", code), "no recursive chown/chmod"
+
+
+def test_compose_definition_contains_no_forbidden_operation():
+    code = _strip_comments(COMPOSE.read_text(encoding="utf-8"))
+    for pattern in FORBIDDEN:
+        assert not re.search(pattern, code, re.IGNORECASE), pattern
+    assert "build:" not in code
+
+
+@needs_bash
+def test_scripts_are_committed_executable():
+    if shutil.which("git") is None:
+        pytest.skip("git not installed")
+    out = subprocess.run(
+        ["git", "ls-files", "-s", "scripts/agency"], cwd=ROOT, capture_output=True, text=True
+    )
+    modes = {line.split()[0] for line in out.stdout.splitlines()}
+    assert modes <= {"100755"} and modes, modes
+
+
+def test_preflight_is_read_only_by_construction():
+    text = _strip_comments((AGENCY / "preflight.sh").read_text(encoding="utf-8"))
+    mutating = (
+        r"\b(mkdir|touch|chown|chmod|rm|mv|cp|tee|dd)\b",
+        r"docker\s+(run|start|stop|restart|kill|rm|rmi|exec|pull|build|load|tag|create|volume\s+create|network\s+create)",
+        r"compose[^\n]*\s(up|start|stop|restart|down|run|pull|build|create)\b",
+        r"(?:^|\s)\d?>>?\s*[^&=\s]",
+    )
+    for pattern in mutating:
+        hits = [line for line in text.splitlines() if re.search(pattern, line)]
+        hits = [h for h in hits if "/dev/null" not in h and "2>&1" not in h]
+        assert not hits, (pattern, hits)
+
+
+def _run(args: list[str], *, env: dict[str, str] | None = None, cwd: Path = ROOT):
+    return subprocess.run(
+        [BASH, *args],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=env or _clean_env(),
+        cwd=cwd,
+    )
+
+
+def _not_root() -> bool:
+    out = subprocess.run([BASH, "-c", "id -u"], capture_output=True, text=True)
+    return out.stdout.strip() != "0"
+
+
+@needs_bash
+def test_prepare_storage_is_dry_run_by_default_and_prints_exact_operations():
+    result = _run(["scripts/agency/prepare-storage.sh"])
+    assert result.returncode == 0, result.stderr
+    out = result.stdout
+    assert "DRY-RUN" in out and "nothing was changed" in out
+    for line in (
+        "mkdir /data/rma-portal/postgres",
+        "chown 70:70 /data/rma-portal/postgres",
+        "chmod 0700 /data/rma-portal/postgres",
+        "chown 10001:10001 /data/rma-portal/app-data",
+        "chmod 0750 /data/rma-portal/logs",
+        "chmod 0700 /data/rma-portal/session-state",
+        "chmod 0700 /data/rma-portal/browser-profile",
+        "chmod 0700 /data/rma-portal/backups",
+        "chmod 0700 /data/rma-portal/config",
+        "chown 1000:1000 /data/rma-portal/releases",
+        "chown 1000:1000 /data/rma-portal/image-bundles",
+    ):
+        assert line in out, line
+    # /data itself is never a target
+    assert not re.search(r"(mkdir|chown|chmod)[^\n]* /data\n", out)
+
+
+@needs_bash
+@pytest.mark.parametrize(
+    "root",
+    [
+        "",
+        "/",
+        "/data",
+        "/var",
+        "/var/lib/docker",
+        "/var/lib/docker/rma",
+        "rma-portal",
+        "data/rma",
+        "/data/../etc",
+        "/data/rma-portal/",
+        "/data/a/b",
+        "/etc",
+    ],
+)
+def test_prepare_storage_rejects_dangerous_roots(root):
+    result = _run(["scripts/agency/prepare-storage.sh", "--root", root])
+    assert result.returncode != 0
+    assert "refusing" in result.stderr or "must be" in result.stderr
+    assert "planned operations" not in result.stdout
+
+
+@needs_bash
+@pytest.mark.skipif(
+    not (_working_bash() and _not_root()), reason="must not run --apply as root in a test"
+)
+def test_prepare_storage_apply_needs_root():
+    result = _run(["scripts/agency/prepare-storage.sh", "--apply"])
+    assert result.returncode != 0
+    assert "needs root" in result.stderr
+
+
+def _fake_toolbox(tmp_path: Path) -> tuple[dict[str, str], Path]:
+    """PATH with a recording fake `docker` and a `python3` that is the current interpreter."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "docker.log"
+    state = tmp_path / "loaded"
+    (bin_dir / "docker").write_text(
+        f"""#!/bin/sh
+echo "$@" >> "{log.as_posix()}"
+case "$*" in
+  "load "*) : > "{state.as_posix()}"; exit 0 ;;
+  "image inspect --format {{{{.Id}}}} "*)
+     if [ -f "{state.as_posix()}" ]; then echo sha256:{"ab" * 32}; exit 0; fi; exit 1 ;;
+  "version --format {{{{.Server.Arch}}}}") echo amd64; exit 0 ;;
+esac
+exit 0
+""",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (bin_dir / "python3").write_text(
+        "#!/bin/sh\n"
+        "if command -v cygpath >/dev/null 2>&1; then\n"  # Git-Bash on Windows: native python needs C:\ paths
+        '  n=$#; i=0; while [ $i -lt $n ]; do a="$1"; shift; case "$a" in /*) a="$(cygpath -w "$a")" ;; esac;'
+        ' set -- "$@" "$a"; i=$((i+1)); done\n'
+        "fi\n"
+        f'exec "{Path(sys.executable).as_posix()}" "$@"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    for tool in ("docker", "python3"):
+        (bin_dir / tool).chmod((bin_dir / tool).stat().st_mode | stat.S_IEXEC)
+    env = _clean_env()
+    env["PATH"] = f"{bin_dir.as_posix()}{os.pathsep}{env['PATH']}"
+    return env, log
+
+
+def _make_bundle(tmp_path: Path, *, corrupt: bool = False) -> Path:
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    tar = bundle / f"rma-portal-images-{VERSION}.tar"
+    tar.write_bytes(b"not really a docker archive")
+    digest = subprocess.run(
+        ["sha256sum", tar.name], cwd=bundle, capture_output=True, text=True
+    ).stdout
+    (bundle / (tar.name + ".sha256")).write_text(digest, encoding="utf-8", newline="\n")
+    manifest = bundle / f"rma-portal-images-{VERSION}.manifest.json"
+    image_id = "sha256:" + "ab" * 32
+    subprocess.run(
+        [
+            sys.executable,
+            str(AGENCY / "manifest.py"),
+            "write",
+            "--output",
+            str(manifest),
+            "--commit",
+            COMMIT,
+            "--version",
+            VERSION,
+            "--architecture",
+            "amd64",
+            "--archive",
+            tar.name,
+            "--archive-sha256",
+            digest.split()[0],
+            "--archive-bytes",
+            str(tar.stat().st_size),
+            "--postgres-source",
+            "postgres:16-alpine@sha256:" + "1" * 64,
+            "--image",
+            f"rma-portal:{VERSION}|{image_id}|",
+            "--image",
+            f"rma-portal-web:{VERSION}|{image_id}|",
+            "--image",
+            f"rma-portal-postgres:{VERSION}|{image_id}|",
+        ],
+        check=True,
+    )
+    if corrupt:
+        tar.write_bytes(b"tampered after checksum")
+    return tar
+
+
+def _docker_calls(log: Path) -> list[str]:
+    return log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+
+
+@needs_bash
+def test_loader_is_dry_run_by_default(tmp_path):
+    env, log = _fake_toolbox(tmp_path)
+    tar = _make_bundle(tmp_path)
+    result = _run(["scripts/agency/load-images.sh", tar.as_posix()], env=env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "dry-run complete" in result.stdout and "would load" in result.stdout
+    assert not any(call.startswith("load") for call in _docker_calls(log))
+
+
+@needs_bash
+def test_loader_verifies_the_checksum_before_any_docker_load(tmp_path):
+    env, log = _fake_toolbox(tmp_path)
+    tar = _make_bundle(tmp_path, corrupt=True)
+    for extra in ([], ["--apply"]):
+        result = _run(["scripts/agency/load-images.sh", tar.as_posix(), *extra], env=env)
+        assert result.returncode != 0
+        assert "checksum" in (result.stdout + result.stderr).lower()
+    assert not any(call.startswith("load") for call in _docker_calls(log))
+
+
+@needs_bash
+def test_loader_loads_only_with_apply_and_then_confirms_image_ids(tmp_path):
+    env, log = _fake_toolbox(tmp_path)
+    tar = _make_bundle(tmp_path)
+    result = _run(["scripts/agency/load-images.sh", tar.as_posix(), "--apply"], env=env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    calls = _docker_calls(log)
+    assert [c for c in calls if c.startswith("load")] == [f"load --input {tar.as_posix()}"]
+    assert result.stdout.count("OK  rma-portal") == 3
+    assert not any(re.search(r"\b(rmi|prune|pull|build|rm)\b", call) for call in calls)
+
+
+@needs_bash
+def test_verify_bundle_reports_manifest_and_is_read_only(tmp_path):
+    env, log = _fake_toolbox(tmp_path)
+    tar = _make_bundle(tmp_path)
+    result = _run(["scripts/agency/verify-bundle.sh", tar.as_posix()], env=env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert COMMIT in result.stdout and f"rma-portal:{VERSION}" in result.stdout
+    assert _docker_calls(log) == []
+
+
+@needs_bash
+def test_export_refuses_a_dirty_working_tree_before_building(tmp_path):
+    if shutil.which("git") is None:
+        pytest.skip("git not installed")
+    repo = tmp_path / "repo"
+    shutil.copytree(AGENCY, repo / "scripts" / "agency")
+    (repo / "compose.prod.yaml").write_text("services: {}\n", encoding="utf-8")
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run([*git, "add", "-A"], cwd=repo, check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "x"], cwd=repo, check=True)
+    (repo / "untracked.txt").write_text("dirty", encoding="utf-8")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    env, log = _fake_toolbox(tmp_path)
+    result = _run(
+        ["scripts/agency/export-images.sh", "--output-dir", out_dir.as_posix()], env=env, cwd=repo
+    )
+    assert result.returncode != 0
+    assert "dirty" in result.stderr
+    assert not any(c.startswith(("build", "save")) for c in _docker_calls(log))
+    assert list(out_dir.iterdir()) == []
+
+
+def test_export_derives_immutable_tags_from_the_commit_and_keeps_secrets_out():
+    text = (AGENCY / "export-images.sh").read_text(encoding="utf-8")
+    assert 'VERSION="${COMMIT:0:12}"' in text and "git rev-parse HEAD" in text
+    assert "git status --porcelain" in text
+    assert 'APP="rma-portal:$VERSION"' in text and 'WEB="rma-portal-web:$VERSION"' in text
+    assert "docker save" in text and "sha256sum" in text and "manifest.py" in text
+    assert "git archive" in text and ".env " not in text.replace(".env.agency.example", "")
+    prod = (ROOT / "compose.prod.yaml").read_text(encoding="utf-8")
+    assert "postgres:16-alpine@sha256:" in prod  # the pinned source the exporter re-tags
+
+
+def test_backup_script_contract():
+    text = (AGENCY / "backup.sh").read_text(encoding="utf-8")
+    code = _strip_comments(text)
+    assert "--format=custom" in code and "pg_restore --list" in code
+    assert "sha256sum" in code and ".manifest" in code and ".complete" in code
+    assert code.index(".complete.partial") > code.index(".manifest")  # marker written last
+    assert "--with-session" in code
+    assert '"$ROOT/backups"' in code and "RMA_DEFAULT_STORAGE_ROOT" in code
+    assert "umask 077" in code
+    assert not re.search(r"\.env\b(?!\.)[^\n]*(tar|cp |cat )", code.replace('"$ENV_FILE"', ""))
+    for line in code.splitlines():
+        if re.search(r"(?<![-\w])rm\s", line) and "cleanup" not in line:
+            assert "$BACKUP_DIR" in line, line  # deletion only inside the backup directory
+    assert "cron" not in code.lower() and "systemd" not in code.lower()
+
+
+def test_restore_rehearsal_is_isolated():
+    code = _strip_comments((AGENCY / "restore-rehearsal.sh").read_text(encoding="utf-8"))
+    for token in (
+        "--network none",
+        "--tmpfs /var/lib/postgresql/data",
+        "--cap-drop ALL",
+        "--pull never",
+        'NAME="rma-portal-restore-rehearsal"',
+        "sha256sum -c",
+        ".complete",
+    ):
+        assert token in code, token
+    assert (
+        " -p " not in code
+        and "--publish" not in code
+        and "-v " not in code
+        and "--volume" not in code
+    )
+    for line in code.splitlines():
+        if "docker rm" in line:
+            assert '"$NAME"' in line
