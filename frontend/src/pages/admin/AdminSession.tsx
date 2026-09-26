@@ -1,7 +1,7 @@
 import { CircleCheck, ExternalLink, PlugZap, RefreshCw, Unplug } from "lucide-react";
-import { useRequestSync, useSyncHealth } from "../../api/hooks";
+import { useRequestSync, useStartSession, useSyncHealth } from "../../api/hooks";
 import { PollBadge } from "../../components/Badges";
-import { Button, buttonClass } from "../../components/ui/Button";
+import { Button } from "../../components/ui/Button";
 import { PageHeader } from "../../components/ui/PageHeader";
 import { useToast } from "../../components/ui/Toast";
 import { DelayedSkeleton, ErrorState } from "../../components/ui/States";
@@ -10,6 +10,7 @@ import { formatDateTime } from "../../labels";
 export function AdminSession() {
   const health = useSyncHealth();
   const sync = useRequestSync();
+  const connect = useStartSession();
   const toast = useToast();
 
   if (health.isLoading) {
@@ -38,6 +39,26 @@ export function AdminSession() {
         toast({ message: result.queued ? "Synchronisation demandée." : "Une demande est déjà en attente." }),
       onError: (error) => toast({ tone: "error", message: error.message }),
     });
+  const openSession = () => {
+    const viewer = window.open("about:blank", "rma-omegaflow-session");
+    if (viewer) viewer.opener = null;
+    connect.mutate(undefined, {
+      onSuccess: (result) => {
+        if (!result.started) {
+          toast({ message: "Une fenêtre de connexion OmegaFlow est déjà ouverte : ouverture du bureau." });
+        }
+        if (viewer) viewer.location.replace(result.connect_url);
+        else window.location.assign(result.connect_url);
+      },
+      onError: () => {
+        viewer?.close();
+        toast({
+          tone: "error",
+          message: "Impossible de démarrer la connexion OmegaFlow. Réessayez ou contactez l’administrateur système.",
+        });
+      },
+    });
+  };
 
   return (
     <>
@@ -104,17 +125,17 @@ export function AdminSession() {
             </div>
             <div className="actions-row">
               {session.connect_url ? (
-                <a
-                  className={buttonClass(healthy ? "secondary" : "primary", "lg")}
-                  href={session.connect_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
+                <Button
+                  variant={healthy ? "secondary" : "primary"}
+                  size="lg"
+                  loading={connect.isPending}
+                  onClick={openSession}
                 >
                   <PlugZap size={16} aria-hidden="true" />
                   {healthy ? "Ouvrir le navigateur de session" : "Se connecter / Reconnecter"}
                   <ExternalLink size={14} aria-hidden="true" />
                   <span className="visually-hidden"> (nouvel onglet)</span>
-                </a>
+                </Button>
               ) : (
                 <p className="key-sub">Le navigateur de session n’est pas configuré sur ce serveur.</p>
               )}

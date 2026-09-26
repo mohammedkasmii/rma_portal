@@ -16,7 +16,7 @@
 #
 # --existing-rma (upgrades): allow the rma-portal Compose project, the documented rma-portal-*
 # containers and rma-portal-net, but only genuine ones (project label, bind mounts directly under
-# /data/rma-portal, web only on 192.168.1.32:8480, browser only on 127.0.0.1:6081). Default = strict
+# /data/rma-portal, web on 192.168.1.32:8480, browser on 192.168.1.32:6081). Default = strict
 # first-deployment mode, where any existing RMA resource is a blocker.
 #
 # Stage usage: Stage 1 with --pre-config (no env file exists yet), after Stage 2 add --storage-prepared, after Stage 4 add
@@ -144,7 +144,7 @@ if command -v docker >/dev/null 2>&1 && docker ps >/dev/null 2>&1; then
             published="$(printf '%s\n' "$rma_ports" | awk -F'|' -v n="$cname" '$1 == n {print $2}' | tr ',' '\n' | sed 's/^ *//' | grep -- '->' || true)"
             case "$cname" in
                 rma-portal-web) want_pub="192.168.1.32:8480->8080/tcp" ;;
-                rma-portal-browser) want_pub="127.0.0.1:6081->6080/tcp" ;;
+                rma-portal-browser) want_pub="192.168.1.32:6081->6080/tcp" ;;
                 *) want_pub="" ;;
             esac
             if [ "$published" != "$want_pub" ]; then fail "$cname publishes '${published:-nothing}', expected '${want_pub:-nothing}'"; rma_bad=1; fi
@@ -194,6 +194,7 @@ else
     secret_check POSTGRES_PASSWORD 16
     secret_check RMA_SESSION_SECRET 32
     secret_check RMA_VNC_PASSWORD 8
+    secret_check RMA_BROWSER_CONTROL_TOKEN 32
     version="$(env_value "$ENV_FILE" RMA_VERSION)"
     if printf '%s' "$version" | grep -qE '^[0-9a-f]{12}$'; then ok "RMA_VERSION=$version is a 12-character commit tag"; else fail "RMA_VERSION must be a 12-character git commit tag (got '${version:-empty}')"; fi
     storage="$(env_value "$ENV_FILE" RMA_STORAGE_ROOT)"
@@ -206,7 +207,11 @@ else
     else
         fail "RMA_WEB_BIND_IP must be the private LAN address (never 0.0.0.0, loopback or Tailscale 100.x); got '${web_ip:-empty}'"
     fi
-    [ "$novnc_ip" = "127.0.0.1" ] && ok "RMA_NOVNC_BIND_IP=127.0.0.1" || fail "RMA_NOVNC_BIND_IP must be 127.0.0.1 (got '${novnc_ip:-empty}')"
+    if [ "$novnc_ip" = "$web_ip" ] && [ -n "$novnc_ip" ]; then
+        ok "RMA_NOVNC_BIND_IP=$novnc_ip matches the private portal LAN address"
+    else
+        fail "RMA_NOVNC_BIND_IP must equal RMA_WEB_BIND_IP ($web_ip), never 0.0.0.0 or a public address; got '${novnc_ip:-empty}'"
+    fi
     ai="$(env_value "$ENV_FILE" RMA_OLLAMA_ENABLED false)"
     if [ "$ai" = "false" ]; then ok "RMA_OLLAMA_ENABLED=false (no AI in the initial deployment)"; elif [ "$ALLOW_AI" -eq 1 ]; then warn "AI enabled (--allow-ai)"; else fail "RMA_OLLAMA_ENABLED must be false for the initial deployment"; fi
     [ "$(env_value "$ENV_FILE" RMA_COOKIE_SECURE false)" = "false" ] && ok "RMA_COOKIE_SECURE=false (trusted-LAN HTTP pilot)" || warn "RMA_COOKIE_SECURE is not false: correct only when the portal is served over HTTPS"

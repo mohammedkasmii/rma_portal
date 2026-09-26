@@ -13,6 +13,7 @@ export type NoteView = S["NoteView"];
 export type WorkState = S["WorkStateView"];
 export type SessionHealth = S["SessionHealthView"];
 export type SyncHealth = S["SyncHealthView"];
+export type SessionConnect = S["SessionConnectOut"];
 export type SyncRun = S["SyncRunView"];
 export type User = S["UserOut"];
 export type AdminUser = S["AdminUserOut"];

@@ -4,6 +4,26 @@
  */
 
 export interface paths {
+    "/api/v1/admin/session/connect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Connect Session
+         * @description Start the isolated visible browser; credentials stay inside noVNC.
+         */
+        post: operations["connect_session_api_v1_admin_session_connect_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/users": {
         parameters: {
             query?: never;
@@ -969,6 +989,15 @@ export interface components {
          * @enum {string}
          */
         Role: "ADMIN" | "EMPLOYEE";
+        /** SessionConnectOut */
+        SessionConnectOut: {
+            /** Connect Url */
+            connect_url: string;
+            /** Started */
+            started: boolean;
+            /** State */
+            state: string;
+        };
         /** SessionHealthView */
         SessionHealthView: {
             /** Connect Url */
@@ -1180,6 +1209,26 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    connect_session_api_v1_admin_session_connect_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionConnectOut"];
+                };
+            };
+        };
+    };
     list_users_api_v1_admin_users_get: {
         parameters: {
             query?: never;

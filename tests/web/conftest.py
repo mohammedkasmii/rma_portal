@@ -44,6 +44,7 @@ def application(settings, uow_factory, portal_account_id, fake_open_and_wait) ->
         open_and_wait=fake_open_and_wait,
     )
     settings.session_secret = "test-secret-not-for-production"
+    settings.novnc_url = "https://vnc.example/"
     work_service = WorkService(
         uow_factory, default_catalog(), base_url="https://omegaflow.example", connect_url="https://vnc.example/"
     )

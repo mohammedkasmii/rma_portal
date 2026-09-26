@@ -136,6 +136,8 @@ services:
       RMA_PORTAL_HOST: 0.0.0.0
       RMA_PORTAL_PORT: "8765"
       RMA_PORTAL_RUN_SCHEDULER: "false"
+      RMA_PORTAL_BROWSER_CONTROL_URL: http://browser:6090
+      RMA_PORTAL_BROWSER_CONTROL_TOKEN: ${RMA_BROWSER_CONTROL_TOKEN:?set RMA_BROWSER_CONTROL_TOKEN}
       FORWARDED_ALLOW_IPS: "*"
     read_only: true
     tmpfs:
@@ -255,8 +257,9 @@ services:
     networks: [rma-portal-net]
     <<: *logging
 
-  # The validated noVNC desktop: the administrator logs in to OmegaFlow here. Published on
-  # loopback only; administrators reach it through an SSH tunnel.
+  # The validated noVNC desktop: an RMA administrator logs in to OmegaFlow here. It is
+  # published on the server's private LAN address and protected by the VNC password. The
+  # separate control API stays private inside rma-portal-net and requires its own token.
   browser:
     image: *app-image
     pull_policy: never
@@ -275,6 +278,7 @@ services:
     shm_size: "1gb"
     environment:
       POC_VNC_PASSWORD: ${RMA_VNC_PASSWORD:?set RMA_VNC_PASSWORD (first 8 characters are used)}
+      RMA_POC_CONTROL_TOKEN: ${RMA_BROWSER_CONTROL_TOKEN:?set RMA_BROWSER_CONTROL_TOKEN}
       POC_OMEGAFLOW_BASE_URL: ${OMEGAFLOW_BASE_URL:-https://omegaflow.ma}
       POC_OMEGAFLOW_START_ROUTE: ${OMEGAFLOW_START_ROUTE:-https://omegaflow.ma/#dossiers-en-instance-accord/}
       POC_LOCALE: fr-FR

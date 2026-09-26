@@ -47,18 +47,56 @@ function server(extra?: (call: Call) => ReturnType<Parameters<typeof installFetc
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Connexion OmegaFlow", () => {
-  it("offers the reconnect link and a refresh, without any credential field", async () => {
-    const calls = server();
+  it("starts the private login browser before opening noVNC", async () => {
+    const replace = vi.fn();
+    const popup = { location: { replace }, close: vi.fn(), opener: window };
+    vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+    const calls = server((call) => {
+      if (call.path === "/admin/session/connect") {
+        return { status: 202, json: { started: true, state: "started", connect_url: session.connect_url } };
+      }
+    });
     renderApp(<App />, "/admin/session");
 
-    const link = await screen.findByRole("link", { name: /Se connecter \/ Reconnecter/ });
-    expect(link).toHaveAttribute("href", "https://vnc.example/connect");
-    expect(link).toHaveAttribute("rel", expect.stringContaining("noopener"));
+    await userEvent.click(await screen.findByRole("button", { name: /Se connecter \/ Reconnecter/ }));
+    await waitFor(() => expect(replace).toHaveBeenCalledWith("https://vnc.example/connect"));
+    expect(calls.some((c) => c.method === "POST" && c.path === "/admin/session/connect")).toBe(true);
     expect(screen.queryByLabelText(/mot de passe/i)).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Actualiser maintenant" }));
     expect(await screen.findByText("Synchronisation demandée.")).toBeInTheDocument();
     expect(calls.some((c) => c.method === "POST" && c.path === "/sync/run")).toBe(true);
+  });
+
+  it("closes the blank tab and shows a French error when the startup fails", async () => {
+    const popup = { location: { replace: vi.fn() }, close: vi.fn(), opener: window };
+    vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+    server((call) => {
+      if (call.path === "/admin/session/connect") return { status: 503, json: { detail: "hors ligne" } };
+    });
+    renderApp(<App />, "/admin/session");
+
+    await userEvent.click(await screen.findByRole("button", { name: /Se connecter \/ Reconnecter/ }));
+
+    expect(await screen.findByText(/Impossible de démarrer la connexion OmegaFlow/)).toBeInTheDocument();
+    expect(popup.close).toHaveBeenCalled();
+    expect(popup.location.replace).not.toHaveBeenCalled();
+  });
+
+  it("explains that a login is already active and still opens the desktop", async () => {
+    const replace = vi.fn();
+    vi.spyOn(window, "open").mockReturnValue({ location: { replace }, close: vi.fn(), opener: window } as unknown as Window);
+    server((call) => {
+      if (call.path === "/admin/session/connect") {
+        return { status: 202, json: { started: false, state: "already_running", connect_url: session.connect_url } };
+      }
+    });
+    renderApp(<App />, "/admin/session");
+
+    await userEvent.click(await screen.findByRole("button", { name: /Se connecter \/ Reconnecter/ }));
+
+    expect(await screen.findByText(/déjà ouverte/)).toBeInTheDocument();
+    await waitFor(() => expect(replace).toHaveBeenCalledWith("https://vnc.example/connect"));
   });
 });
 

@@ -24,6 +24,7 @@ from rma_portal.infrastructure.db.advisory_lock import build_cycle_lock
 from rma_portal.infrastructure.db.models import Base
 from rma_portal.infrastructure.db.session import create_engine_for, create_session_factory
 from rma_portal.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWorkFactory
+from rma_portal.infrastructure.portal.browser_control import BrowserControlClient
 from rma_portal.infrastructure.portal.camoufox_reader import CamoufoxPortalReaderFactory
 from rma_portal.infrastructure.portal.session_connector import SessionConnector
 from rma_portal.infrastructure.portal.workflow_catalog import default_catalog
@@ -45,6 +46,7 @@ class Application:
     account_service: AccountService
     dossier_service: DossierService
     session_connector: SessionConnector
+    browser_control: BrowserControlClient | None = None
 
 
 def build_application(settings: Settings | None = None) -> Application:
@@ -117,6 +119,11 @@ def build_application(settings: Settings | None = None) -> Application:
         is_sync_running=lambda: sync_service.is_running,
         verify_timeout_seconds=settings.session_verify_timeout_seconds,
     )
+    browser_control = None
+    if settings.browser_control_url and settings.browser_control_token:
+        browser_control = BrowserControlClient(
+            settings.browser_control_url, settings.browser_control_token
+        )
 
     return Application(
         settings=settings,
@@ -131,6 +138,7 @@ def build_application(settings: Settings | None = None) -> Application:
         account_service=account_service,
         dossier_service=dossier_service,
         session_connector=session_connector,
+        browser_control=browser_control,
     )
 
 

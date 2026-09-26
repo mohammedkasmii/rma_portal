@@ -8,6 +8,10 @@ import pytest
 from starlette.testclient import TestClient
 
 from rma_portal.domain.enums import Role
+from rma_portal.infrastructure.portal.browser_control import (
+    BrowserControlError,
+    BrowserControlResult,
+)
 from rma_portal.web.api.auth import reset_login_throttle
 from tests.support import seed_workflows
 from tests.unit.application.fakes import complete, row
@@ -166,6 +170,7 @@ MUTATIONS = [
     ("put", "/api/v1/memberships/1/work-status", {"status": "DONE"}),
     ("post", "/api/v1/dossiers/1/notes", {"body": "x"}),
     ("post", "/api/v1/sync/run", None),
+    ("post", "/api/v1/admin/session/connect", None),
     ("patch", "/api/v1/admin/workflows/photos_pending", {"enabled": False}),
     ("post", "/api/v1/admin/users", {"username": "zed", "display_name": "Zed", "password": "PasswordOne1"}),
     ("patch", "/api/v1/admin/users/1", {"active": False}),
@@ -203,6 +208,7 @@ def test_employees_cannot_use_admin_endpoints(client, alice):
 
     assert client.get("/api/v1/admin/workflows").status_code == 403
     assert client.get("/api/v1/admin/users").status_code == 403
+    assert client.post("/api/v1/admin/session/connect", headers=ORIGIN).status_code == 403
     assert client.patch("/api/v1/admin/workflows/photos_pending", json={"enabled": False}, headers=ORIGIN).status_code == 403
     assert client.post(
         "/api/v1/admin/users",
@@ -222,6 +228,64 @@ def test_a_deactivated_employee_loses_access_immediately(client, alice, applicat
 
 def test_health_needs_no_authentication(client):
     assert client.get("/api/v1/health").json() == {"status": "ok"}
+
+
+class _Control:
+    def __init__(self, *, started=True, failure=None):
+        self.calls = 0
+        self._started = started
+        self._failure = failure
+
+    def start_login(self):
+        self.calls += 1
+        if self._failure:
+            raise self._failure
+        return BrowserControlResult(state="CONNECTING", started=self._started)
+
+
+def test_admin_session_connect_returns_the_configured_lan_viewer(client, application, admin_user):
+    application.browser_control = _Control()
+    api_login(client, "admin", ADMIN_PASSWORD)
+
+    response = client.post("/api/v1/admin/session/connect", headers=ORIGIN)
+
+    assert response.status_code == 202
+    assert response.json() == {
+        "started": True,
+        "state": "started",
+        "connect_url": "https://vnc.example/",
+    }
+
+
+def test_admin_session_connect_reports_an_active_login_as_a_normal_state(client, application, admin_user):
+    control = application.browser_control = _Control(started=False)
+    api_login(client, "admin", ADMIN_PASSWORD)
+
+    response = client.post("/api/v1/admin/session/connect", headers=ORIGIN)
+
+    assert response.status_code == 202 and control.calls == 1
+    assert response.json()["started"] is False and response.json()["state"] == "already_running"
+
+
+def test_admin_session_connect_failure_is_generic_and_leaks_nothing(client, application, admin_user):
+    application.browser_control = _Control(failure=BrowserControlError("secret-token-value"))
+    api_login(client, "admin", ADMIN_PASSWORD)
+
+    response = client.post("/api/v1/admin/session/connect", headers=ORIGIN)
+
+    assert response.status_code == 503 and "secret-token-value" not in response.text
+
+
+def test_admin_session_connect_is_admin_only_and_same_origin(client, application, alice, admin_user):
+    control = application.browser_control = _Control()
+
+    assert client.post("/api/v1/admin/session/connect", headers=ORIGIN).status_code == 401
+    api_login(client, "alice", "AlicePassword1")
+    assert client.post("/api/v1/admin/session/connect", headers=ORIGIN).status_code == 403
+    client.post("/api/v1/auth/logout", headers=ORIGIN)
+    api_login(client, "admin", ADMIN_PASSWORD)
+    assert client.post("/api/v1/admin/session/connect").status_code == 403  # missing Origin (CSRF)
+    assert control.calls == 0
 
 
 # --- dashboard, workflows, inbox -------------------------------------------------------------

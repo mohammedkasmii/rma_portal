@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
@@ -15,6 +17,7 @@ from rma_portal.domain.models import (
     DuplicateUsernameError,
     User,
 )
+from rma_portal.infrastructure.portal.browser_control import BrowserControlError
 from rma_portal.infrastructure.security.passwords import WeakPasswordError
 from rma_portal.web.api.auth import UserOut, user_out
 from rma_portal.web.api.deps import (
@@ -65,6 +68,42 @@ def request_sync(
     """Ask the worker for an immediate cycle; the API process never opens the browser."""
     del user
     return SyncRequestOut(queued=service.request_sync())
+
+
+class SessionConnectOut(BaseModel):
+    started: bool
+    state: str
+    connect_url: str
+
+
+@router.post(
+    "/admin/session/connect",
+    response_model=SessionConnectOut,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[same_origin],
+)
+async def connect_session(
+    user: User = Depends(api_admin), app: Application = Depends(get_application)
+) -> SessionConnectOut:
+    """Start the isolated visible browser; credentials stay inside noVNC."""
+    del user
+    if app.browser_control is None or not app.settings.novnc_url:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Le navigateur de connexion n'est pas configuré sur ce serveur.",
+        )
+    try:
+        result = await asyncio.to_thread(app.browser_control.start_login)
+    except BrowserControlError:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Le navigateur de connexion est momentanément indisponible.",
+        ) from None
+    return SessionConnectOut(
+        started=result.started,
+        state="started" if result.started else "already_running",
+        connect_url=app.settings.novnc_url,
+    )
 
 
 # --- administration -----------------------------------------------------------------------------

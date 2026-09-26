@@ -11,6 +11,7 @@ import type {
   NoteView,
   NotificationClass,
   RulesStatus,
+  SessionConnect,
   SyncHealth,
   User,
   WorkState,
@@ -130,6 +131,15 @@ export function useRequestSync() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: () => api<{ queued: boolean }>("/sync/run", { method: "POST" }),
+    onSuccess: () => void client.invalidateQueries({ queryKey: keys.sync }),
+  });
+}
+
+export function useStartSession() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      api<SessionConnect>("/admin/session/connect", { method: "POST" }),
     onSuccess: () => void client.invalidateQueries({ queryKey: keys.sync }),
   });
 }

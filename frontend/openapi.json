@@ -1371,6 +1371,29 @@
         "title": "Role",
         "type": "string"
       },
+      "SessionConnectOut": {
+        "properties": {
+          "connect_url": {
+            "title": "Connect Url",
+            "type": "string"
+          },
+          "started": {
+            "title": "Started",
+            "type": "boolean"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "started",
+          "state",
+          "connect_url"
+        ],
+        "title": "SessionConnectOut",
+        "type": "object"
+      },
       "SessionHealthView": {
         "properties": {
           "connect_url": {
@@ -2037,6 +2060,28 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/admin/session/connect": {
+      "post": {
+        "description": "Start the isolated visible browser; credentials stay inside noVNC.",
+        "operationId": "connect_session_api_v1_admin_session_connect_post",
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionConnectOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Connect Session",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
     "/api/v1/admin/users": {
       "get": {
         "operationId": "list_users_api_v1_admin_users_get",

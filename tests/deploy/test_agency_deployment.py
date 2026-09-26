@@ -97,6 +97,7 @@ def _test_env(tmp_path: Path, **overrides: str) -> Path:
         "POSTGRES_PASSWORD": "test-only-postgres-value",
         "RMA_SESSION_SECRET": "test-only-session-value-0123456789abcdef",
         "RMA_VNC_PASSWORD": "testvnc1",
+        "RMA_BROWSER_CONTROL_TOKEN": "test-only-browser-control-token-0123456789",
     }
     values.update(overrides)
     lines = []
@@ -148,7 +149,7 @@ def _load_audit():
     return module
 
 
-AUDIT_ARGS = {"root": STORAGE, "web": ("192.168.1.32", "8480"), "novnc": ("127.0.0.1", "6081")}
+AUDIT_ARGS = {"root": STORAGE, "web": ("192.168.1.32", "8480"), "novnc": ("192.168.1.32", "6081")}
 
 
 # --- Compose definition ---------------------------------------------------------------------------------
@@ -175,7 +176,7 @@ def test_only_web_and_browser_publish_and_only_on_the_expected_addresses(stack):
     (web,) = services["web"]["ports"]
     (novnc,) = services["browser"]["ports"]
     assert (web["host_ip"], web["published"], web["target"]) == ("192.168.1.32", "8480", 8080)
-    assert (novnc["host_ip"], novnc["published"], novnc["target"]) == ("127.0.0.1", "6081", 6080)
+    assert (novnc["host_ip"], novnc["published"], novnc["target"]) == ("192.168.1.32", "6081", 6080)
     assert "0.0.0.0" not in json.dumps([web, novnc])
     assert "100." not in web["host_ip"]  # never the Tailscale address
 
@@ -296,6 +297,7 @@ def test_images_are_immutable_and_share_one_version(stack):
         "POSTGRES_PASSWORD",
         "RMA_SESSION_SECRET",
         "RMA_VNC_PASSWORD",
+        "RMA_BROWSER_CONTROL_TOKEN",
         "RMA_WEB_BIND_IP",
         "RMA_STORAGE_ROOT",
     ],
@@ -329,13 +331,19 @@ def test_env_example_documents_every_variable_and_holds_no_secret():
         for line in ENV_EXAMPLE.read_text(encoding="utf-8").splitlines()
         if "=" in line and not line.startswith("#")
     )
-    for secret in ("POSTGRES_PASSWORD", "RMA_SESSION_SECRET", "RMA_VNC_PASSWORD", "RMA_VERSION"):
+    for secret in (
+        "POSTGRES_PASSWORD",
+        "RMA_SESSION_SECRET",
+        "RMA_VNC_PASSWORD",
+        "RMA_BROWSER_CONTROL_TOKEN",
+        "RMA_VERSION",
+    ):
         assert values[secret] == "", f"{secret} must be empty in the example"
     assert values["RMA_STORAGE_ROOT"] == "/data/rma-portal"
     assert values["RMA_WEB_BIND_IP"] == "192.168.1.32" and values["RMA_WEB_PORT"] == "8480"
-    assert values["RMA_NOVNC_BIND_IP"] == "127.0.0.1" and values["RMA_NOVNC_PORT"] == "6081"
+    assert values["RMA_NOVNC_BIND_IP"] == "192.168.1.32" and values["RMA_NOVNC_PORT"] == "6081"
     assert values["RMA_PUBLIC_ORIGIN"] == "http://192.168.1.32:8480"
-    assert values["RMA_NOVNC_URL"] == "http://127.0.0.1:6081/vnc.html"
+    assert values["RMA_NOVNC_URL"] == "http://192.168.1.32:6081/vnc.html?autoconnect=1&resize=scale"
     assert values["RMA_COOKIE_SECURE"] == "false" and values["RMA_OLLAMA_ENABLED"] == "false"
     assert (
         values["RMA_POLL_INTERVAL_SECONDS"] == "3600"
@@ -344,17 +352,50 @@ def test_env_example_documents_every_variable_and_holds_no_secret():
     assert values["RMA_TIMEZONE"] == "Africa/Casablanca"
 
 
-def test_the_validated_vm_definition_is_unchanged():
+# The only files below docker/ this feature is allowed to change: the browser control plane.
+APPROVED_BROWSER_CONTROL_FILES = (
+    "docker/poc-browser/supervisord.conf",
+    "docker/poc-browser/healthcheck.sh",
+    "docker/poc-browser/rma_poc/control.py",
+)
+
+
+def test_the_validated_vm_definition_is_unchanged_except_the_browser_control_plane():
     if shutil.which("git") is None:
         pytest.skip("git not installed")
+    excluded = [f":(exclude){path}" for path in APPROVED_BROWSER_CONTROL_FILES]
     diff = subprocess.run(
-        ["git", "diff", "--quiet", "ac386ac", "--", "compose.prod.yaml", ".env.example", "docker"],
+        ["git", "diff", "--quiet", "ac386ac", "--", "compose.prod.yaml", ".env.example", "docker", *excluded],
         cwd=ROOT,
         capture_output=True,
     )
     if diff.returncode not in (0, 1):
         pytest.skip("base commit ac386ac not available")
-    assert diff.returncode == 0, "compose.prod.yaml / .env.example / docker/ must stay untouched"
+    assert diff.returncode == 0, (
+        "compose.prod.yaml / .env.example / docker/ must stay untouched, "
+        "except the approved browser control-plane files"
+    )
+    for path in APPROVED_BROWSER_CONTROL_FILES:
+        assert (ROOT / path).is_file(), f"approved file {path} is missing"
+
+
+@needs_docker
+def test_browser_control_plane_stays_private_and_tokenised_identically(stack):
+    services = stack["services"]
+    dump = json.dumps(stack)
+    assert "docker.sock" not in dump
+    published = [p for svc in services.values() for p in svc.get("ports", [])]
+    assert all(p.get("target") != 6090 and p.get("published") != "6090" for p in published)
+    assert not any("6090" in json.dumps(svc.get("expose", [])) for svc in services.values())
+    api_env, browser_env = services["api"]["environment"], services["browser"]["environment"]
+    token = api_env["RMA_PORTAL_BROWSER_CONTROL_TOKEN"]
+    assert len(token) >= 32 and browser_env["RMA_POC_CONTROL_TOKEN"] == token
+    assert api_env["RMA_PORTAL_BROWSER_CONTROL_URL"] == "http://browser:6090"
+    for name, svc in services.items():
+        if name not in ("api", "browser"):
+            assert token not in json.dumps(svc), f"{name} must not receive the browser control token"
+    assert api_env["RMA_PORTAL_NOVNC_URL"] == "http://192.168.1.32:6081/vnc.html?autoconnect=1&resize=scale"
+    assert "127.0.0.1" not in api_env["RMA_PORTAL_NOVNC_URL"]
 
 
 # --- compose audit helper (what preflight relies on) ------------------------------------------------------
@@ -374,7 +415,7 @@ def test_audit_accepts_the_resolved_stack_and_rejects_each_violation(stack):
         lambda c: c["services"]["api"].update(ports=[{"target": 8765, "published": "8765"}])
     )
     assert broken(lambda c: c["services"]["web"]["ports"][0].update(host_ip="0.0.0.0"))
-    assert broken(lambda c: c["services"]["browser"]["ports"][0].update(host_ip="192.168.1.32"))
+    assert broken(lambda c: c["services"]["browser"]["ports"][0].update(host_ip="127.0.0.1"))
     assert broken(lambda c: c["services"]["db"].update(privileged=True))
     assert broken(lambda c: c["services"]["worker"].update(network_mode="host"))
     assert broken(lambda c: c["services"]["worker"].pop("pids_limit"))
@@ -623,6 +664,11 @@ def _docker_archive(
     return ids
 
 
+def _sha256sum_line(path: Path) -> str:
+    """`sha256sum <name>` output computed portably (sha256sum does not exist on Windows)."""
+    return f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n"
+
+
 def _make_bundle(
     tmp_path: Path,
     *,
@@ -638,9 +684,7 @@ def _make_bundle(
     (tmp_path / "ids").mkdir(exist_ok=True)
     for ref, image_id in ids.items():
         (tmp_path / "ids" / _safe_ref(ref)).write_bytes(image_id.encode() + b"\n")
-    digest = subprocess.run(
-        ["sha256sum", tar.name], cwd=bundle, capture_output=True, text=True
-    ).stdout
+    digest = _sha256sum_line(tar)
     (bundle / (tar.name + ".sha256")).write_text(digest, encoding="utf-8", newline="\n")
     manifest = bundle / f"rma-portal-images-{VERSION}.manifest.json"
     args = [
@@ -805,7 +849,7 @@ GOOD_PORTS = {
     "db": "5432/tcp",
     "api": "8765/tcp",
     "web": "192.168.1.32:8480->8080/tcp",
-    "browser": "127.0.0.1:6081->6080/tcp",
+    "browser": "192.168.1.32:6081->6080/tcp",
     "worker": "",
 }
 MOUNT_DIRS = {
@@ -900,8 +944,8 @@ def test_upgrade_mode_accepts_correctly_labelled_rma_resources_and_stays_read_on
         ),
         ("web_tailscale", "rma-portal-web publishes '100.89.63.25:8480->8080/tcp'"),
         (
-            "browser_lan",
-            "rma-portal-browser publishes '192.168.1.32:6081->6080/tcp', expected '127.0.0.1:6081->6080/tcp'",
+            "browser_loopback",
+            "rma-portal-browser publishes '127.0.0.1:6081->6080/tcp', expected '192.168.1.32:6081->6080/tcp'",
         ),
         ("api_published", "rma-portal-api publishes '0.0.0.0:8765->8765/tcp', expected 'nothing'"),
     ],
@@ -926,8 +970,8 @@ def test_upgrade_mode_rejects_foreign_or_misconfigured_rma_resources(tmp_path, c
         kwargs["ports"] = {"rma-portal-web": "0.0.0.0:8480->8080/tcp"}
     elif case == "web_tailscale":
         kwargs["ports"] = {"rma-portal-web": "100.89.63.25:8480->8080/tcp"}
-    elif case == "browser_lan":
-        kwargs["ports"] = {"rma-portal-browser": "192.168.1.32:6081->6080/tcp"}
+    elif case == "browser_loopback":
+        kwargs["ports"] = {"rma-portal-browser": "127.0.0.1:6081->6080/tcp"}
     elif case == "api_published":
         kwargs["ports"] = {"rma-portal-api": "0.0.0.0:8765->8765/tcp"}
     out = _preflight_out(_scenario(tmp_path, **kwargs), "--existing-rma")
@@ -1027,9 +1071,7 @@ def test_verify_bundle_rejects_a_missing_tag_in_the_tar(tmp_path):
     tar = _make_bundle(tmp_path)
     # Same manifest, but a tar (with a matching checksum) that lacks one required tag.
     _docker_archive(tar, drop_tag=APP_REFS[1])
-    digest = subprocess.run(
-        ["sha256sum", tar.name], cwd=tar.parent, capture_output=True, text=True
-    ).stdout
+    digest = _sha256sum_line(tar)
     (tar.parent / (tar.name + ".sha256")).write_text(digest, encoding="utf-8", newline="\n")
     manifest = tar.with_suffix(".manifest.json")
     data = json.loads(manifest.read_text(encoding="utf-8"))

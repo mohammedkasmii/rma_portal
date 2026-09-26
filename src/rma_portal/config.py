@@ -56,6 +56,8 @@ class Settings:
     session_secret: str = ""
     novnc_url: str = ""
     """Where an administrator reconnects the OmegaFlow session (the noVNC desktop)."""
+    browser_control_url: str = ""
+    browser_control_token: str = ""
     allowed_origins: tuple[str, ...] = ()
     """Extra origins accepted by the same-origin mutation check (behind a proxy)."""
     cookie_secure: bool = False
@@ -171,6 +173,8 @@ def load_settings() -> Settings:
         session_state_path_override=os.environ.get("RMA_PORTAL_SESSION_STATE_PATH", ""),
         log_dir_override=os.environ.get("RMA_PORTAL_LOG_DIR", ""),
         novnc_url=os.environ.get("RMA_PORTAL_NOVNC_URL", ""),
+        browser_control_url=os.environ.get("RMA_PORTAL_BROWSER_CONTROL_URL", ""),
+        browser_control_token=os.environ.get("RMA_PORTAL_BROWSER_CONTROL_TOKEN", ""),
         allowed_origins=tuple(
             origin.strip().rstrip("/")
             for origin in os.environ.get("RMA_PORTAL_ALLOWED_ORIGINS", "").split(",")

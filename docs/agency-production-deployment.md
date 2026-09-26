@@ -32,7 +32,7 @@ No dependency on any other project, container or network.
 | `api` | `rma-portal-api` | `rma-portal:<V>` | **none** (`8765` internal) | 1 | 1 GiB / 256 MiB | 256 | — | unless-stopped | `curl /api/v1/health` |
 | `worker` | `rma-portal-worker` | `rma-portal:<V>` | none | 2 | 3 GiB / 1 GiB | 512 | 1 GiB | unless-stopped | `rma-portal worker-health` |
 | `web` | `rma-portal-web` | `rma-portal-web:<V>` | `192.168.1.32:8480 → 8080` | 0.5 | 256 MiB / 64 MiB | 128 | — | unless-stopped | `wget /healthz` |
-| `browser` | `rma-portal-browser` | `rma-portal:<V>` | `127.0.0.1:6081 → 6080` | 2 | 3 GiB / 1 GiB | 512 | 1 GiB | unless-stopped | noVNC/Xvfb script |
+| `browser` | `rma-portal-browser` | `rma-portal:<V>` | `192.168.1.32:6081 → 6080` | 2 | 3 GiB / 1 GiB | 512 | 1 GiB | unless-stopped | noVNC/Xvfb/control script |
 
 - `<V>` = the 12-character git commit of the bundle (`RMA_VERSION`, mandatory, no default).
 - `memswap_limit` equals the memory limit for every service: an RMA container can never use swap and slow down the host.
@@ -76,15 +76,13 @@ runs PostgreSQL as `postgres` **70:70**; the runtime image (`docker/prod/Dockerf
 | What | Bind | Reachable by |
 |---|---|---|
 | Employee portal | `192.168.1.32:8480` | office LAN → **`http://192.168.1.32:8480`** |
-| Administrator noVNC | `127.0.0.1:6081` | only the server itself; administrators use an SSH tunnel |
+| Administrator noVNC | `192.168.1.32:6081` | office LAN; VNC password required; link shown only to RMA administrators |
 | PostgreSQL, FastAPI | none | only inside `rma-portal-net` |
 
-Administrator noVNC from an administrator PC:
-
-```bash
-ssh -L 6081:127.0.0.1:6081 ubuntu@192.168.1.32      # keep this session open
-# then open: http://127.0.0.1:6081/vnc.html
-```
+An RMA administrator uses **Se connecter / Reconnecter** in the portal. The authenticated
+API asks the browser container to start Camoufox over an internal token-protected endpoint,
+then opens `http://192.168.1.32:6081/vnc.html?autoconnect=1&resize=scale`. No terminal or SSH
+knowledge is required and the Docker socket is never mounted.
 
 - Nothing binds `0.0.0.0` and nothing binds the Tailscale address (`100.89.63.25`); `RMA_WEB_BIND_IP` has no default so an empty value fails loudly.
 - Docker publishes ports through its own packet-filter chain, which bypasses the host firewall’s normal rules; the **bind address is the control**.
@@ -100,7 +98,8 @@ ssh -L 6081:127.0.0.1:6081 ubuntu@192.168.1.32      # keep this session open
 |---|---|
 | `POSTGRES_PASSWORD` | Consumed by PostgreSQL **only when it first initialises an empty data directory** (Stage 5); changing it later does not change the database. Charset `[A-Za-z0-9._~-]` (it is embedded in a URL). |
 | `RMA_SESSION_SECRET` | Signs employee cookies. **Keep it identical across upgrades.** Changing it logs every user out. |
-| `RMA_VNC_PASSWORD` | noVNC/VNC uses **only the first 8 characters**; anything longer is silently ignored. Generated as exactly 8 hex characters; the tunnel to loopback is the real protection. |
+| `RMA_VNC_PASSWORD` | noVNC/VNC uses **only the first 8 characters**; anything longer is silently ignored. Generated as exactly 8 random hex characters and required from the LAN viewer. |
+| `RMA_BROWSER_CONTROL_TOKEN` | Internal API-to-browser secret. Never sent to a browser and never published as a host port. Keep it identical across ordinary upgrades. |
 
 Secrets are generated **on the server** and never printed (Stage 3). `preflight.sh` refuses empty or placeholder secrets, tests them with `grep -q` only,
 and never prints a value. `RMA_OLLAMA_ENABLED` must be `false` for the first deployment; `RMA_POLL_INTERVAL_SECONDS=3600`.
@@ -228,11 +227,12 @@ tar -xzf rma-portal-deploy-<V>.tar.gz -C /data/rma-portal/releases        # crea
 # 3b. secrets, generated here, never printed. noclobber makes an existing .env impossible to overwrite.
 cd /data/rma-portal/releases/rma-portal-deploy-<V>
 ( set -o noclobber; umask 077
-  { grep -v -E '^(RMA_VERSION|POSTGRES_PASSWORD|RMA_SESSION_SECRET|RMA_VNC_PASSWORD)=' .env.agency.example
+  { grep -v -E '^(RMA_VERSION|POSTGRES_PASSWORD|RMA_SESSION_SECRET|RMA_VNC_PASSWORD|RMA_BROWSER_CONTROL_TOKEN)=' .env.agency.example
     echo "RMA_VERSION=<V>"
     echo "POSTGRES_PASSWORD=$(openssl rand -hex 24)"
     echo "RMA_SESSION_SECRET=$(openssl rand -hex 32)"
     echo "RMA_VNC_PASSWORD=$(openssl rand -hex 4)"
+    echo "RMA_BROWSER_CONTROL_TOKEN=$(openssl rand -hex 32)"
   } > /data/rma-portal/config/.env )
 stat -c '%U:%G %a %n' /data/rma-portal/config/.env                          # must be ubuntu:ubuntu 600
 
@@ -345,14 +345,16 @@ docker compose --env-file /data/rma-portal/config/.env -f compose.agency.yaml up
 
 | | |
 |---|---|
-| Verify | `docker port rma-portal-browser` → `6080/tcp -> 127.0.0.1:6081`; `ss -ltn \| grep -E ':6081\b'` shows only `127.0.0.1:6081`; from another LAN PC `curl -m 5 http://192.168.1.32:6081/` **fails** (refused/timeout); from an administrator PC open the tunnel (§3), browse `http://127.0.0.1:6081/vnc.html`, enter the VNC password (the first 8 characters of `RMA_VNC_PASSWORD`, read it on the server only when needed); the worker is still absent |
+| Verify | `docker port rma-portal-browser` → `6080/tcp -> 192.168.1.32:6081`; `ss -ltn \| grep -E ':6081\b'` shows only `192.168.1.32:6081`; from an administrator account click **Se connecter / Reconnecter**, enter the VNC password, and confirm Camoufox opens; the worker is still absent |
 | Affects | creates `rma-portal-browser` (Xvfb + noVNC + Camoufox); writes `browser-profile` only when used |
-| Stop | 6081 reachable from the LAN, bound to anything but `127.0.0.1`, no desktop through the tunnel |
+| Stop | 6081 bound to `0.0.0.0`, a public or Tailscale address; employee accounts can trigger connection; the button opens noVNC without first starting Camoufox |
 | Rollback | `… stop browser` |
 
 ### Stage 11 — Capture the OmegaFlow session
 
 ```bash
+# Normal path: an administrator clicks "Se connecter / Reconnecter" in the portal.
+# Console fallback only:
 docker compose --env-file /data/rma-portal/config/.env -f compose.agency.yaml exec browser python -m rma_poc login --timeout 900
 ```
 
@@ -431,7 +433,7 @@ docker compose --env-file /data/rma-portal/config/.env -f compose.agency.yaml up
 
 ## 7. Normal upgrade (later)
 
-New bundle → Stage 0 checks → the upgrade preflight (run from the new release directory; `--existing-rma` accepts only genuine `rma-portal` containers, network and bind mounts, with web still on `192.168.1.32:8480` and browser on `127.0.0.1:6081`, and stays read-only): `bash scripts/agency/preflight.sh --storage-prepared --existing-rma` (the initial-deployment stages keep the strict default mode) → Stage 4 (`load-images`, dry-run then `--apply`) → manual backup (§8) → set `RMA_VERSION=<new V>` (edit the one line; **keep `RMA_SESSION_SECRET`
+New bundle → Stage 0 checks → the upgrade preflight (run from the new release directory; `--existing-rma` accepts only genuine `rma-portal` containers, network and bind mounts, with web still on `192.168.1.32:8480` and browser on `192.168.1.32:6081`, and stays read-only): `bash scripts/agency/preflight.sh --storage-prepared --existing-rma` (the initial-deployment stages keep the strict default mode) → Stage 4 (`load-images`, dry-run then `--apply`) → manual backup (§8) → set `RMA_VERSION=<new V>` (edit the one line; **keep `RMA_SESSION_SECRET`
 unchanged**) → `run --rm --no-deps migrate` → repeat the start commands of Stages 7, 8, 10 and 12 in that order (each recreates only its own service), verifying each. Changing the session secret logs everyone out.
 
 ## 8. Rollback, backups and restore
@@ -479,7 +481,7 @@ run the migration one-shot (Stage 6) if the dump is older than the code; restart
 | Stop / restart one service | `docker compose --env-file /data/rma-portal/config/.env -f compose.agency.yaml stop worker` / `… restart worker` (name exactly one service) |
 | Record before/after | `docker ps -a --no-trunc --format '{{.ID}} {{.Names}} {{.Image}} {{.CreatedAt}}' \| sort > <file>` before, and again after; `diff` the two |
 | Prove other projects unchanged | the “Others unchanged?” command above; plus `docker compose ls -a` (project list and their `running(n)` counts must be as at Stage 2) |
-| Verify published ports | `docker port rma-portal-web` → `8080/tcp -> 192.168.1.32:8480`; `docker port rma-portal-browser` → `6080/tcp -> 127.0.0.1:6081`; `docker port rma-portal-api` / `-db` → nothing; `ss -ltn \| grep -E ':(8480\|6081)\b'` |
+| Verify published ports | `docker port rma-portal-web` → `8080/tcp -> 192.168.1.32:8480`; `docker port rma-portal-browser` → `6080/tcp -> 192.168.1.32:6081`; `docker port rma-portal-api` / `-db` → nothing; `ss -ltn \| grep -E ':(8480\|6081)\b'` |
 | Verify bind-mount locations | `docker inspect --format '{{range .Mounts}}{{.Type}} {{.Source}} -> {{.Destination}}{{"\n"}}{{end}}' rma-portal-worker` (all `bind`, all under `/data/rma-portal`) |
 | Worker synchronization summaries | the two SQL queries of Stage 13; `docker logs rma-portal-worker 2>&1 \| grep 'stage=synchronization'` |
 | Confirm blocked write attempts stay zero | `docker logs rma-portal-worker 2>&1 \| grep -c 'blocked non-read-only OmegaFlow request'` → `0` (also for `rma-portal-browser`) |

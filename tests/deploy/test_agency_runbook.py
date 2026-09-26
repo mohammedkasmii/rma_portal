@@ -128,16 +128,16 @@ def test_image_stage_verifies_before_loading_and_never_pulls_or_builds():
     assert "docker pull" not in stage and "docker build" not in stage
 
 
-def test_network_exposure_and_tunnel_are_documented_exactly():
+def test_network_exposure_and_admin_connection_are_documented_exactly():
     assert "192.168.1.32:8480" in TEXT and "http://192.168.1.32:8480" in TEXT
-    assert "127.0.0.1:6081" in TEXT
-    assert "ssh -L 6081:127.0.0.1:6081 ubuntu@192.168.1.32" in TEXT
-    assert "http://127.0.0.1:6081/vnc.html" in TEXT
+    assert "192.168.1.32:6081" in TEXT
+    assert "internal token-protected endpoint" in TEXT
+    assert "http://192.168.1.32:6081/vnc.html?autoconnect=1&resize=scale" in TEXT
     assert "RMA_COOKIE_SECURE=false" in TEXT
     assert "HTTPS" in TEXT and "separately approved" in TEXT
     assert "Tailscale" in TEXT and "100.89.63.25" in TEXT
     assert "8080/tcp -> 192.168.1.32:8480" in _stage(8)
-    assert "6080/tcp -> 127.0.0.1:6081" in _stage(10)
+    assert "6080/tcp -> 192.168.1.32:6081" in _stage(10)
 
 
 def test_secret_behaviour_is_documented():
