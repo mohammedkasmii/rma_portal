@@ -124,22 +124,28 @@ It refuses a dirty tree (tracked, staged or untracked changes), builds the two i
 |---|---|
 | `rma-portal-images-<V>.tar` | the three images (`docker save`) |
 | `rma-portal-images-<V>.tar.sha256` | `sha256sum -c` compatible checksum |
-| `rma-portal-images-<V>.manifest.json` | full git commit, tags, image IDs/digests, creation time (UTC), `linux/amd64`, archive name/size/checksum |
+| `rma-portal-images-<V>.manifest.json` | schema 2: full git commit, tags, per image the **`archive_config_id`** (authoritative) plus informational `source_engine_id` / `source_repo_digests`, creation time (UTC), `linux/amd64`, archive name/size/checksum |
 | `rma-portal-deploy-<V>.tar.gz` (+ `.sha256`) | `git archive` of the tracked deployment files only: `compose.agency.yaml`, `.env.agency.example`, `scripts/agency/`, this runbook |
 
 It contains no `.env`, password, cookie, database data or session state (images are built from tracked files with the existing ignore rules; the
 deployment archive is a `git archive`). Existing output files are never overwritten.
 
+**Which image ID is authoritative.** `docker save` writes each image's *config object*, and `docker load` registers the SHA-256 of that config as the image `.Id`.
+The exporting engine's own `.Id` can instead be an OCI manifest-list or registry-manifest digest, which does **not** survive a save/load round trip. The exporter therefore derives
+each `archive_config_id` from the finished tar (reading `manifest.json` and the referenced config member directly, extracting nothing, hashing the config bytes) and stores the
+source engine ID/digests only as informational fields. `verify-bundle.sh` re-derives them from the tar and refuses a bundle whose tags or configs do not match; `load-images.sh` and
+`preflight.sh --require-images` compare `docker image inspect` IDs with `archive_config_id` only. Bundles with an older manifest schema are rejected: export a new versioned bundle.
+
 Server side (all read-only until `--apply`):
 
 ```bash
-scripts/agency/verify-bundle.sh /data/rma-portal/image-bundles/rma-portal-images-<V>.tar   # checksum + manifest + architecture
+scripts/agency/verify-bundle.sh /data/rma-portal/image-bundles/rma-portal-images-<V>.tar   # checksum + tar image configs + manifest + architecture
 scripts/agency/load-images.sh   /data/rma-portal/image-bundles/rma-portal-images-<V>.tar   # dry-run: verify, list what would load
 scripts/agency/load-images.sh   /data/rma-portal/image-bundles/rma-portal-images-<V>.tar --apply   # verify again, then docker load
 ```
 
 The loader verifies the checksum first in both modes, aborts on any mismatch, refuses to run if a same-named image has a different ID, never deletes or
-replaces an unrelated image, never prunes, never pulls or builds, and confirms every loaded image ID equals the manifest.
+replaces an unrelated image, never prunes, never pulls or builds, and confirms every loaded image ID equals the manifest's `archive_config_id`.
 
 ## 6. Staged first deployment
 
@@ -256,7 +262,7 @@ bash scripts/agency/preflight.sh --storage-prepared --require-images \
 
 | | |
 |---|---|
-| Expected | `checksum … OK`; manifest printed; dry-run lists `would load` for the three tags; after `--apply` three `OK  <ref> sha256:<id>` lines equal to the manifest; preflight 0 blockers with three `image ID matches the manifest` |
+| Expected | `checksum … OK`; manifest printed; dry-run lists `would load` for the three tags; after `--apply` three `OK  <ref> sha256:<id>` lines equal to the manifest's `archive_config_id`; preflight 0 blockers with three `image ID matches the manifest` |
 | Affects | adds exactly `rma-portal:<V>`, `rma-portal-web:<V>`, `rma-portal-postgres:<V>` to the local image store (layers under Docker’s existing root; ~2–3 GiB). No other image is modified or removed; no pruning afterwards |
 | Stop | checksum or ID mismatch, architecture mismatch, root free space below the preflight threshold, a `CONFLICT` line |
 | Rollback | none (images are inert). Never delete images to “clean up”; unused RMA images may stay until an explicit, separately approved cleanup |
@@ -484,7 +490,7 @@ Never use a command that selects all containers for a mutation, and never `docke
 ## 10. Assumptions to confirm live (not verifiable offline)
 
 1. The pinned bases and Camoufox build fetch successfully on the VM build (already validated for `compose.prod.yaml`) and the bundle loads on Docker 29.7.2 with `overlay2`.
-2. `docker load` restores the tags `rma-portal-postgres:<V>` etc. with the manifest IDs (the loader verifies this).
+2. `docker load` restores the tags `rma-portal-postgres:<V>` etc. with the manifest's `archive_config_id` values (the loader verifies this).
 3. The `ubuntu` user can run `docker` without `sudo`; `openssl`, `python3`, `ss`, `sha256sum` exist (preflight checks the last three).
 4. `192.168.1.32` is assigned to the server NIC (preflight checks) and 8480/6081 are free at deployment time.
 5. 3 GiB per Camoufox container and 2 CPUs are enough for a full 21-workflow cycle; if a cycle is OOM-killed, raise that service’s limit by reviewed change.

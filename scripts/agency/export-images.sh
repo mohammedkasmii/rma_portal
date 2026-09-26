@@ -14,7 +14,8 @@
 #   5. writes into --output-dir (created with umask 077, atomically, never overwriting):
 #        rma-portal-images-<version>.tar            the three images (docker save)
 #        rma-portal-images-<version>.tar.sha256     sha256sum -c compatible checksum
-#        rma-portal-images-<version>.manifest.json  commit, tags, image IDs/digests, arch, timestamp
+#        rma-portal-images-<version>.manifest.json  commit, tags, archive config IDs (authoritative), source
+#                                                   engine IDs (informational), arch, timestamp
 #        rma-portal-deploy-<version>.tar.gz         tracked deployment files (compose, scripts, runbook)
 #        rma-portal-deploy-<version>.tar.gz.sha256
 # The bundle contains no .env, password, cookie, database data or session state: images are
@@ -30,7 +31,7 @@ OUT=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --output-dir) OUT="${2:?--output-dir needs a value}"; shift ;;
-        -h|--help) sed -n '2,22p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,23p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
     shift
@@ -80,11 +81,17 @@ mv "$TAR.partial" "$TAR"
 (cd "$OUT" && sha256sum "$(basename "$TAR")" >"$(basename "$TAR").sha256")
 SHA="$(cut -d' ' -f1 "$TAR.sha256")"
 
+# The authoritative, portable image ID is the SHA-256 of each image's config object INSIDE the
+# finished tar (what `docker load` registers as .Id). The source engine's .Id / RepoDigests can be
+# OCI manifest-list digests that do not survive save/load, so they are recorded as informational only.
+mapfile -t archive_ids < <(python3 -B "$HERE/archive_ids.py" ids "$TAR" "$APP" "$WEB" "$PG")
+[ "${#archive_ids[@]}" -eq 3 ] || die "could not derive the three image config IDs from $TAR"
 specs=()
-for ref in "$APP" "$WEB" "$PG"; do
-    id="$(docker image inspect --format '{{.Id}}' "$ref")"
+for line in "${archive_ids[@]}"; do
+    ref="${line%% *}"; config_id="${line#* }"
+    source_id="$(docker image inspect --format '{{.Id}}' "$ref")"
     digests="$(docker image inspect --format '{{join .RepoDigests ","}}' "$ref")"
-    specs+=(--image "$ref|$id|$digests")
+    specs+=(--image "$ref|$config_id|$source_id|$digests")
 done
 python3 -B "$HERE/manifest.py" write --output "$MANIFEST" --commit "$COMMIT" --version "$VERSION" \
     --architecture "$ARCH_RAW" --archive "$(basename "$TAR")" --archive-sha256 "$SHA" \

@@ -7,7 +7,7 @@
 # The SHA-256 (and manifest consistency) is ALWAYS verified first; `docker load` runs only
 # with --apply and only after that check passed. It adds the three rma-portal* image tags
 # and nothing else: it never deletes, replaces or prunes any image, and never pulls or builds.
-# After loading it confirms that every loaded image ID equals the manifest.
+# After loading it confirms that every loaded image ID equals the portable archive config ID in the manifest.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
@@ -31,13 +31,21 @@ MANIFEST="${TAR%.tar}.manifest.json"
 "$HERE/verify-bundle.sh" "$TAR" || die "verification failed: nothing was loaded"
 
 echo "== images this bundle adds (existing images are never replaced or removed)"
-python3 -B "$HERE/manifest.py" images "$MANIFEST" | while read -r ref id; do
+# Expected IDs are the portable archive config IDs (what docker load registers), never the
+# source engine's IDs. A same-name tag with a different ID is a CONFLICT and aborts BEFORE any load.
+conflict=0
+while read -r ref id; do
     if current="$(docker image inspect --format '{{.Id}}' "$ref" 2>/dev/null)"; then
-        if [ "$current" = "$id" ]; then echo "  already loaded, identical: $ref"; else echo "  CONFLICT: $ref exists with a different ID ($current)" >&2; exit 3; fi
+        if [ "$current" = "$id" ]; then
+            echo "  already loaded, identical: $ref"
+        else
+            echo "  CONFLICT: $ref exists with ID $current, bundle has $id" >&2; conflict=1
+        fi
     else
         echo "  would load: $ref ($id)"
     fi
-done
+done < <(python3 -B "$HERE/manifest.py" images "$MANIFEST")
+[ "$conflict" -eq 0 ] || die "conflicting tags found: nothing was loaded, nothing was changed (resolve by choosing a new version)"
 
 if [ "$APPLY" -ne 1 ]; then
     echo "dry-run complete: nothing was loaded. Re-run with --apply after approval."
@@ -53,5 +61,5 @@ while read -r ref id; do
     got="$(docker image inspect --format '{{.Id}}' "$ref" 2>/dev/null || echo missing)"
     if [ "$got" = "$id" ]; then echo "  OK  $ref $got"; else echo "  BAD $ref expected $id got $got" >&2; status=1; fi
 done < <(python3 -B "$HERE/manifest.py" images "$MANIFEST")
-[ "$status" -eq 0 ] || die "loaded image IDs do not match the manifest"
+[ "$status" -eq 0 ] || die "loaded image IDs do not match the manifest's archive config IDs"
 echo "loaded. No pruning, pulling or building was performed."

@@ -175,7 +175,8 @@ def images(config: dict[str, Any]) -> list[str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    sys.stdout.reconfigure(newline="\n")  # type: ignore[attr-defined]  # shell callers parse this
+    parser =argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--storage-root", required=True)
     parser.add_argument("--web-ip", required=True)
     parser.add_argument("--web-port", required=True)

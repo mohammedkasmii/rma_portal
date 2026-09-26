@@ -8,7 +8,9 @@ Nothing here touches a server or builds an image. Compose checks use `docker com
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib.util
+import io
 import json
 import os
 import re
@@ -16,6 +18,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -516,19 +519,39 @@ def test_prepare_storage_apply_needs_root():
     assert "needs root" in result.stderr
 
 
+def _safe_ref(ref: str) -> str:
+    return ref.replace(":", "_").replace("/", "_")
+
+
 def _fake_toolbox(tmp_path: Path) -> tuple[dict[str, str], Path]:
-    """PATH with a recording fake `docker` and a `python3` that is the current interpreter."""
+    """PATH with a recording fake `docker` and a `python3` that is the current interpreter.
+
+    After a fake `docker load`, `image inspect --format {{.Id}} REF` prints ids/<REF>; before it,
+    pre/<REF> (an already-present tag) or a failure. `docker compose` is forwarded to the real CLI.
+    """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
+    for sub in ("ids", "pre"):
+        (tmp_path / sub).mkdir(exist_ok=True)
     log = tmp_path / "docker.log"
     state = tmp_path / "loaded"
+    real = (shutil.which("docker") or "").replace("\\", "/")
     (bin_dir / "docker").write_text(
         f"""#!/bin/sh
 echo "$@" >> "{log.as_posix()}"
+for a; do last="$a"; done
+safe="$(echo "$last" | tr ':/' '__')"
 case "$*" in
+  "compose "*) exec "{real}" "$@" ;;
   "load "*) : > "{state.as_posix()}"; exit 0 ;;
   "image inspect --format {{{{.Id}}}} "*)
-     if [ -f "{state.as_posix()}" ]; then echo sha256:{"ab" * 32}; exit 0; fi; exit 1 ;;
+     if [ -f "{tmp_path.as_posix()}/pre/$safe" ]; then cat "{tmp_path.as_posix()}/pre/$safe"; exit 0; fi
+     if [ -f "{state.as_posix()}" ] && [ -f "{tmp_path.as_posix()}/ids/$safe" ]; then
+        cat "{tmp_path.as_posix()}/ids/$safe"; exit 0; fi
+     exit 1 ;;
+  "image inspect --format {{{{.Os}}}}/{{{{.Architecture}}}} "*) echo linux/amd64; exit 0 ;;
+  "image inspect --format {{{{.Architecture}}}} "*) echo amd64; exit 0 ;;
+  "image inspect --format {{{{index .Config.Labels"*) exit 0 ;;
   "version --format {{{{.Server.Arch}}}}") echo amd64; exit 0 ;;
 esac
 exit 0
@@ -553,47 +576,83 @@ exit 0
     return env, log
 
 
-def _make_bundle(tmp_path: Path, *, corrupt: bool = False) -> Path:
+APP_REFS = [f"rma-portal:{VERSION}", f"rma-portal-web:{VERSION}", f"rma-portal-postgres:{VERSION}"]
+SOURCE_ENGINE_ID = (
+    "sha256:" + "ee" * 32
+)  # what a BuildKit/containerd source store may report: NOT portable
+
+
+def _docker_archive(
+    path: Path,
+    refs: list[str] | None = None,
+    *,
+    layout: str = "classic",
+    omit_config: str | None = None,
+    duplicate_tag: str | None = None,
+    drop_tag: str | None = None,
+    unsafe_member: str | None = None,
+    bad_digest: bool = False,
+) -> dict[str, str]:
+    """A synthetic `docker save` archive; returns {ref: portable config ID}."""
+    refs = list(refs or APP_REFS)
+    ids: dict[str, str] = {}
+    entries: list[dict] = []
+
+    def add(tar: tarfile.TarFile, name: str, data: bytes) -> None:
+        info = tarfile.TarInfo(name)
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+
+    with tarfile.open(path, "w") as tar:
+        for index, ref in enumerate(refs):
+            config = json.dumps({"architecture": "amd64", "os": "linux", "ref": ref}).encode()
+            digest = hashlib.sha256(config).hexdigest()
+            member = f"{digest}.json" if layout == "classic" else f"blobs/sha256/{digest}"
+            if ref != omit_config:
+                add(tar, member, config + (b" " if bad_digest and index == 0 else b""))
+            ids[ref] = f"sha256:{digest}"
+            if ref != drop_tag:
+                entries.append({"Config": member, "RepoTags": [ref], "Layers": []})
+        if duplicate_tag:
+            entries.append(
+                {"Config": entries[0]["Config"], "RepoTags": [duplicate_tag], "Layers": []}
+            )
+        add(tar, "manifest.json", json.dumps(entries).encode())
+        if unsafe_member:
+            add(tar, unsafe_member, b"x")
+    return ids
+
+
+def _make_bundle(
+    tmp_path: Path,
+    *,
+    corrupt: bool = False,
+    layout: str = "classic",
+    manifest_ids: dict | None = None,
+) -> Path:
+    """Bundle with a real synthetic archive; fake-docker post-load IDs are the portable config IDs."""
     bundle = tmp_path / "bundle"
     bundle.mkdir()
     tar = bundle / f"rma-portal-images-{VERSION}.tar"
-    tar.write_bytes(b"not really a docker archive")
+    ids = _docker_archive(tar, layout=layout)
+    (tmp_path / "ids").mkdir(exist_ok=True)
+    for ref, image_id in ids.items():
+        (tmp_path / "ids" / _safe_ref(ref)).write_bytes(image_id.encode() + b"\n")
     digest = subprocess.run(
         ["sha256sum", tar.name], cwd=bundle, capture_output=True, text=True
     ).stdout
     (bundle / (tar.name + ".sha256")).write_text(digest, encoding="utf-8", newline="\n")
     manifest = bundle / f"rma-portal-images-{VERSION}.manifest.json"
-    image_id = "sha256:" + "ab" * 32
-    subprocess.run(
-        [
-            sys.executable,
-            str(AGENCY / "manifest.py"),
-            "write",
-            "--output",
-            str(manifest),
-            "--commit",
-            COMMIT,
-            "--version",
-            VERSION,
-            "--architecture",
-            "amd64",
-            "--archive",
-            tar.name,
-            "--archive-sha256",
-            digest.split()[0],
-            "--archive-bytes",
-            str(tar.stat().st_size),
-            "--postgres-source",
-            "postgres:16-alpine@sha256:" + "1" * 64,
-            "--image",
-            f"rma-portal:{VERSION}|{image_id}|",
-            "--image",
-            f"rma-portal-web:{VERSION}|{image_id}|",
-            "--image",
-            f"rma-portal-postgres:{VERSION}|{image_id}|",
-        ],
-        check=True,
-    )
+    args = [
+        sys.executable, str(AGENCY / "manifest.py"), "write", "--output", str(manifest),
+        "--commit", COMMIT, "--version", VERSION, "--architecture", "amd64", "--archive", tar.name,
+        "--archive-sha256", digest.split()[0], "--archive-bytes", str(tar.stat().st_size),
+        "--postgres-source", "postgres:16-alpine@sha256:" + "1" * 64,
+    ]  # fmt: skip
+    for ref in APP_REFS:
+        config_id = (manifest_ids or ids)[ref]
+        args += ["--image", f"{ref}|{config_id}|{SOURCE_ENGINE_ID}|registry/x@{SOURCE_ENGINE_ID}"]
+    subprocess.run(args, check=True)
     if corrupt:
         tar.write_bytes(b"tampered after checksum")
     return tar
@@ -632,7 +691,7 @@ def test_loader_loads_only_with_apply_and_then_confirms_image_ids(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     calls = _docker_calls(log)
     assert [c for c in calls if c.startswith("load")] == [f"load --input {tar.as_posix()}"]
-    assert result.stdout.count("OK  rma-portal") == 3
+    assert len(re.findall(r"^  OK  rma-portal", result.stdout, re.MULTILINE)) == 3
     assert not any(re.search(r"\b(rmi|prune|pull|build|rm)\b", call) for call in calls)
 
 
@@ -873,3 +932,186 @@ def test_upgrade_mode_rejects_foreign_or_misconfigured_rma_resources(tmp_path, c
         kwargs["ports"] = {"rma-portal-api": "0.0.0.0:8765->8765/tcp"}
     out = _preflight_out(_scenario(tmp_path, **kwargs), "--existing-rma")
     assert any(expected in line for line in _fails(out)), (expected, _fails(out))
+
+
+# --- portable image IDs: archive config digests, not source-engine IDs -------------------------------------
+
+
+def _archive_ids():
+    spec = importlib.util.spec_from_file_location("archive_ids", AGENCY / "archive_ids.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["archive_ids"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("layout", ["classic", "oci"])
+def test_archive_ids_are_the_config_digests_for_both_config_layouts(tmp_path, layout):
+    module = _archive_ids()
+    tar = tmp_path / "images.tar"
+    expected = _docker_archive(tar, layout=layout)
+    got = module.ids_for(str(tar), APP_REFS)
+    assert got == expected
+    assert SOURCE_ENGINE_ID not in got.values()
+    assert all(re.fullmatch(r"sha256:[0-9a-f]{64}", value) for value in got.values())
+    assert [p.name for p in tmp_path.iterdir()] == ["images.tar"]  # nothing was extracted
+
+
+@pytest.mark.parametrize(
+    ("options", "message"),
+    [
+        ({"drop_tag": APP_REFS[1]}, "tag not found"),
+        ({"duplicate_tag": APP_REFS[0]}, "duplicate tag"),
+        ({"omit_config": APP_REFS[2]}, "config member missing"),
+        ({"unsafe_member": "../escape.json"}, "unsafe member path"),
+        ({"unsafe_member": "/etc/passwd"}, "unsafe member path"),
+        ({"bad_digest": True}, "config digest mismatch"),
+    ],
+)
+def test_archive_ids_reject_malformed_or_unsafe_archives(tmp_path, options, message):
+    module = _archive_ids()
+    tar = tmp_path / "images.tar"
+    _docker_archive(tar, **options)
+    with pytest.raises(module.ArchiveError, match=message):
+        module.ids_for(str(tar), APP_REFS)
+    assert [p.name for p in tmp_path.iterdir()] == ["images.tar"]
+
+
+def test_archive_ids_reject_malformed_manifest_json(tmp_path):
+    module = _archive_ids()
+    tar = tmp_path / "images.tar"
+    with tarfile.open(tar, "w") as archive:
+        info = tarfile.TarInfo("manifest.json")
+        info.size = 5
+        archive.addfile(info, io.BytesIO(b"{not "))
+    with pytest.raises(module.ArchiveError, match="malformed"):
+        module.ids_for(str(tar), APP_REFS)
+
+
+@needs_bash
+@pytest.mark.parametrize("layout", ["classic", "oci"])
+def test_manifest_uses_the_portable_id_and_labels_source_ids_informational(tmp_path, layout):
+    tar = _make_bundle(tmp_path, layout=layout)
+    manifest = tar.with_suffix(".manifest.json")
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    assert data["schema"] == 2
+    for image in data["images"]:
+        assert image["archive_config_id"] != image["source_engine_id"] == SOURCE_ENGINE_ID
+        assert "id" not in image
+    base = [sys.executable, str(AGENCY / "manifest.py")]
+    listed = subprocess.run(
+        [*base, "images", str(manifest)], capture_output=True, text=True, check=True
+    ).stdout
+    assert SOURCE_ENGINE_ID not in listed
+    shown = subprocess.run(
+        [*base, "show", str(manifest)], capture_output=True, text=True, check=True
+    ).stdout
+    assert "(informational) source_engine_id" in shown and "archive_config_id=" in shown
+
+
+@needs_bash
+def test_verify_bundle_rejects_manifest_ids_that_do_not_match_the_tar(tmp_path):
+    env, log = _fake_toolbox(tmp_path)
+    wrong = dict.fromkeys(APP_REFS, SOURCE_ENGINE_ID)  # e.g. an old manifest that stored engine IDs
+    tar = _make_bundle(tmp_path, manifest_ids=wrong)
+    result = _run(["scripts/agency/verify-bundle.sh", tar.as_posix()], env=env)
+    assert result.returncode != 0
+    assert "archive config BAD" in result.stderr
+    assert not any(call.startswith("load") for call in _docker_calls(log))
+
+
+@needs_bash
+def test_verify_bundle_rejects_a_missing_tag_in_the_tar(tmp_path):
+    env, log = _fake_toolbox(tmp_path)
+    tar = _make_bundle(tmp_path)
+    # Same manifest, but a tar (with a matching checksum) that lacks one required tag.
+    _docker_archive(tar, drop_tag=APP_REFS[1])
+    digest = subprocess.run(
+        ["sha256sum", tar.name], cwd=tar.parent, capture_output=True, text=True
+    ).stdout
+    (tar.parent / (tar.name + ".sha256")).write_text(digest, encoding="utf-8", newline="\n")
+    manifest = tar.with_suffix(".manifest.json")
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    data["archive"]["sha256"] = digest.split()[0]
+    manifest.write_text(json.dumps(data), encoding="utf-8")
+    result = _run(["scripts/agency/verify-bundle.sh", tar.as_posix()], env=env)
+    assert result.returncode != 0 and "tag not found" in result.stderr
+    assert _docker_calls(log) == []
+
+
+@needs_bash
+def test_loader_dry_run_accepts_an_existing_tag_with_the_portable_id(tmp_path):
+    env, log = _fake_toolbox(tmp_path)
+    tar = _make_bundle(tmp_path)
+    ref = APP_REFS[0]
+    portable = (tmp_path / "ids" / _safe_ref(ref)).read_bytes()
+    (tmp_path / "pre" / _safe_ref(ref)).write_bytes(portable)
+    result = _run(["scripts/agency/load-images.sh", tar.as_posix()], env=env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"already loaded, identical: {ref}" in result.stdout
+    assert not any(call.startswith("load") for call in _docker_calls(log))
+
+
+@needs_bash
+@pytest.mark.parametrize("extra", [[], ["--apply"]])
+def test_loader_rejects_a_conflicting_existing_tag_before_any_load(tmp_path, extra):
+    env, log = _fake_toolbox(tmp_path)
+    tar = _make_bundle(tmp_path)
+    (tmp_path / "pre" / _safe_ref(APP_REFS[1])).write_bytes(SOURCE_ENGINE_ID.encode() + b"\n")
+    result = _run(["scripts/agency/load-images.sh", tar.as_posix(), *extra], env=env)
+    assert result.returncode != 0
+    assert f"CONFLICT: {APP_REFS[1]}" in result.stderr
+    calls = _docker_calls(log)
+    assert not any(call.startswith("load") for call in calls)
+    assert not any(re.match(r"(rmi|tag|rm|image (rm|tag|prune))\b", call) for call in calls)
+
+
+@needs_bash
+def test_loader_post_load_check_uses_the_portable_id_not_the_source_engine_id(tmp_path):
+    env, log = _fake_toolbox(tmp_path)
+    tar = _make_bundle(tmp_path)
+    # the engine after load reports the OLD (source) ID for one tag -> must be rejected
+    (tmp_path / "ids" / _safe_ref(APP_REFS[2])).write_bytes(SOURCE_ENGINE_ID.encode() + b"\n")
+    result = _run(["scripts/agency/load-images.sh", tar.as_posix(), "--apply"], env=env)
+    assert result.returncode != 0
+    assert f"BAD {APP_REFS[2]}" in result.stderr
+
+
+@needs_bash
+@needs_docker
+@pytest.mark.parametrize("consistent", [True, False])
+def test_preflight_require_images_compares_the_portable_ids(tmp_path, consistent):
+    env, _ = _fake_toolbox(tmp_path)
+    tar = _make_bundle(tmp_path)
+    manifest = tar.with_suffix(".manifest.json")
+    (tmp_path / "loaded").write_bytes(b"")  # images present after a load
+    if not consistent:
+        (tmp_path / "ids" / _safe_ref(APP_REFS[0])).write_bytes(SOURCE_ENGINE_ID.encode() + b"\n")
+    env_file = _test_env(tmp_path)
+    result = _run(
+        [
+            "scripts/agency/preflight.sh",
+            "--env-file",
+            env_file.as_posix(),
+            "--compose-file",
+            COMPOSE.as_posix(),
+            "--require-images",
+            "--manifest",
+            manifest.as_posix(),
+        ],
+        env=env,
+    )
+    out = result.stdout
+    for ref in APP_REFS[1:]:
+        assert f"[ OK ] {ref} image ID matches the manifest" in out, out
+    if consistent:
+        assert f"[ OK ] {APP_REFS[0]} image ID matches the manifest" in out, out
+    else:
+        assert f"[FAIL] {APP_REFS[0]} image ID differs from the manifest" in out, out
+
+
+def test_docs_distinguish_the_authoritative_archive_config_id():
+    text = (ROOT / "docs" / "agency-production-deployment.md").read_text(encoding="utf-8")
+    assert "archive_config_id" in text and "informational" in text.lower()
+    assert "manifest-list" in text
