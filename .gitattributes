@@ -11,3 +11,6 @@ alembic.ini text eol=lf
 docker/prod/nginx.conf text eol=lf
 docker/prod/rma-proxy.conf text eol=lf
 docker/prod/Dockerfile.dockerignore text eol=lf
+compose.agency.yaml text eol=lf
+.env.agency.example text eol=lf
+scripts/agency/*.py text eol=lf

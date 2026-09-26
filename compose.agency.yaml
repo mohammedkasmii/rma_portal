@@ -1,0 +1,309 @@
+# RMA Platform V2 -- agency Ubuntu server (shared production host). STANDALONE definition.
+#
+# This file is NOT an override of compose.prod.yaml (the validated VM workflow): Compose
+# merges volume lists additively, so an override could never guarantee that the VM named
+# volumes are fully replaced. Nothing here is shared with any other stack on the host.
+#
+#   docker compose --env-file /data/rma-portal/config/.env -f compose.agency.yaml config -q
+#
+# Rules this file enforces (verified by tests/deploy/test_agency_deployment.py):
+#   * project rma-portal, containers rma-portal-*, one private network rma-portal-net;
+#   * no `build:` (production never builds) and pull_policy: never (never pulls);
+#   * images are immutable: rma-portal[-web|-postgres]:${RMA_VERSION} (12-char git commit),
+#     RMA_VERSION has no default and no fallback;
+#   * every persistent byte is an explicit bind mount under ${RMA_STORAGE_ROOT}
+#     (create_host_path: false -> Docker can never create a root-owned directory itself);
+#   * only `web` (LAN address) and `browser` (loopback) publish ports; PostgreSQL and the
+#     API are reachable only inside rma-portal-net;
+#   * no privileged mode, no host network, no Docker socket, cap_drop ALL, no-new-privileges;
+#   * every service has cpu, memory, swap, PID limits, a restart policy, a health check
+#     (long-running services) and bounded json-file logs.
+name: rma-portal
+
+x-app-image: &app-image rma-portal:${RMA_VERSION:?set RMA_VERSION (12-character git commit of the image bundle)}
+
+x-app-env: &app-env
+  RMA_PORTAL_DATABASE_URL: postgresql+psycopg://rma:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/rma
+  RMA_PORTAL_SESSION_SECRET: ${RMA_SESSION_SECRET:?set RMA_SESSION_SECRET (openssl rand -hex 32)}
+  RMA_PORTAL_DATA_DIR: /var/lib/rma-portal
+  RMA_PORTAL_LOG_DIR: /var/log/rma-portal
+  RMA_PORTAL_TIMEZONE: ${RMA_TIMEZONE:-Africa/Casablanca}
+  RMA_PORTAL_OMEGAFLOW_BASE_URL: ${OMEGAFLOW_BASE_URL:-https://omegaflow.ma}
+  RMA_PORTAL_OMEGAFLOW_START_ROUTE: ${OMEGAFLOW_START_ROUTE:-https://omegaflow.ma/#dossiers-en-instance-accord/}
+  RMA_PORTAL_POLL_INTERVAL_SECONDS: ${RMA_POLL_INTERVAL_SECONDS:-3600}
+  RMA_PORTAL_MAX_DETAIL_READS_PER_CYCLE: ${RMA_MAX_DETAIL_READS_PER_CYCLE:-60}
+  RMA_PORTAL_NOVNC_URL: ${RMA_NOVNC_URL:-}
+  RMA_PORTAL_ALLOWED_ORIGINS: ${RMA_PUBLIC_ORIGIN:-}
+  RMA_PORTAL_COOKIE_SECURE: ${RMA_COOKIE_SECURE:-false}
+  RMA_PORTAL_OLLAMA_ENABLED: ${RMA_OLLAMA_ENABLED:-false}
+  RMA_PORTAL_OLLAMA_BASE_URL: ${RMA_OLLAMA_BASE_URL:-http://127.0.0.1:11434}
+  RMA_PORTAL_OLLAMA_MODEL: ${RMA_OLLAMA_MODEL:-qwen3:8b}
+  RMA_PORTAL_OLLAMA_TIMEOUT_SECONDS: ${RMA_OLLAMA_TIMEOUT_SECONDS:-45}
+  TZ: ${RMA_TIMEZONE:-Africa/Casablanca}
+
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "5"
+
+services:
+  db:
+    image: rma-portal-postgres:${RMA_VERSION:?set RMA_VERSION}
+    pull_policy: never
+    container_name: rma-portal-db
+    init: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    # The official entrypoint starts as root, then drops to postgres (70:70) with gosu.
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    cpus: 1.0
+    mem_limit: 2g
+    mem_reservation: 512m
+    memswap_limit: 2g
+    pids_limit: 256
+    environment:
+      POSTGRES_USER: rma
+      POSTGRES_DB: rma
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      TZ: ${RMA_TIMEZONE:-Africa/Casablanca}
+    volumes:
+      - type: bind
+        source: ${RMA_STORAGE_ROOT:?set RMA_STORAGE_ROOT}/postgres
+        target: /var/lib/postgresql/data
+        bind: {create_host_path: false}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rma -d rma"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    networks: [rma-portal-net]
+    <<: *logging
+
+  # One-shot: applies the additive migrations and refreshes the workflow catalog.
+  migrate:
+    image: *app-image
+    pull_policy: never
+    container_name: rma-portal-migrate
+    command: ["migrate"]
+    init: true
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    cpus: 1.0
+    mem_limit: 1g
+    mem_reservation: 256m
+    memswap_limit: 1g
+    pids_limit: 256
+    environment: *app-env
+    volumes:
+      - type: bind
+        source: ${RMA_STORAGE_ROOT:?set RMA_STORAGE_ROOT}/app-data
+        target: /var/lib/rma-portal
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${RMA_STORAGE_ROOT:?set RMA_STORAGE_ROOT}/logs
+        target: /var/log/rma-portal
+        bind: {create_host_path: false}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [rma-portal-net]
+    <<: *logging
+
+  api:
+    image: *app-image
+    pull_policy: never
+    container_name: rma-portal-api
+    command: ["serve"]
+    init: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    cpus: 1.0
+    mem_limit: 1g
+    mem_reservation: 256m
+    memswap_limit: 1g
+    pids_limit: 256
+    environment:
+      <<: *app-env
+      RMA_PORTAL_HOST: 0.0.0.0
+      RMA_PORTAL_PORT: "8765"
+      RMA_PORTAL_RUN_SCHEDULER: "false"
+      FORWARDED_ALLOW_IPS: "*"
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - type: bind
+        source: ${RMA_STORAGE_ROOT:?set RMA_STORAGE_ROOT}/app-data
+        target: /var/lib/rma-portal
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${RMA_STORAGE_ROOT:?set RMA_STORAGE_ROOT}/logs
+        target: /var/log/rma-portal
+        bind: {create_host_path: false}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "--max-time", "4", "http://127.0.0.1:8765/api/v1/health"]
+      interval: 15s
+      timeout: 6s
+      retries: 4
+      start_period: 20s
+    networks: [rma-portal-net]
+    <<: *logging
+
+  # The scheduler/worker: one poll cycle at a time (PostgreSQL advisory lock), on-demand cycles
+  # requested by the API, and the outbox. Headless Camoufox reuses the captured session.
+  worker:
+    image: *app-image
+    pull_policy: never
+    container_name: rma-portal-worker
+    command: ["worker"]
+    init: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    cpus: 2.0
+    mem_limit: 3g
+    mem_reservation: 1g
+    memswap_limit: 3g
+    pids_limit: 512
+    shm_size: "1gb"
+    environment:
+      <<: *app-env
+      RMA_PORTAL_RUN_SCHEDULER: "false"
+      RMA_PORTAL_HEADLESS_BROWSER: "true"
+      RMA_PORTAL_BROWSER_PROFILE_DIR: /var/lib/rma-poc/profile/browser-profile
+      RMA_PORTAL_SESSION_STATE_PATH: /var/lib/rma-poc/state/omegaflow-session-state.json
+      RMA_PORTAL_BROWSER_LOCK_PATH: /var/lib/rma-poc/state/browser-profile.lock
+    volumes:
+      - type: bind
+        source: ${RMA_STORAGE_ROOT:?set RMA_STORAGE_ROOT}/app-data
+        target: /var/lib/rma-portal
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${RMA_STORAGE_ROOT:?set RMA_STORAGE_ROOT}/logs
+        target: /var/log/rma-portal
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${RMA_STORAGE_ROOT:?set RMA_STORAGE_ROOT}/browser-profile
+        target: /var/lib/rma-poc/profile
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${RMA_STORAGE_ROOT:?set RMA_STORAGE_ROOT}/session-state
+        target: /var/lib/rma-poc/state
+        bind: {create_host_path: false}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "rma-portal", "worker-health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+    networks: [rma-portal-net]
+    <<: *logging
+
+  # Reverse proxy + React static frontend: the only web entry point employees use.
+  # Published on the server LAN address only (RMA_WEB_BIND_IP has no default on purpose:
+  # an empty value must fail loudly instead of falling back to 0.0.0.0).
+  web:
+    image: rma-portal-web:${RMA_VERSION:?set RMA_VERSION}
+    pull_policy: never
+    container_name: rma-portal-web
+    init: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETGID, SETUID]
+    cpus: 0.5
+    mem_limit: 256m
+    mem_reservation: 64m
+    memswap_limit: 256m
+    pids_limit: 128
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/cache/nginx
+      - /var/run
+    ports:
+      - target: 8080
+        published: "${RMA_WEB_PORT:-8480}"
+        host_ip: ${RMA_WEB_BIND_IP:?set RMA_WEB_BIND_IP (the server LAN address, never 0.0.0.0)}
+        protocol: tcp
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [rma-portal-net]
+    <<: *logging
+
+  # The validated noVNC desktop: the administrator logs in to OmegaFlow here. Published on
+  # loopback only; administrators reach it through an SSH tunnel.
+  browser:
+    image: *app-image
+    pull_policy: never
+    container_name: rma-portal-browser
+    entrypoint: ["/opt/rma-poc/bin/entrypoint.sh"]
+    init: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    cpus: 2.0
+    mem_limit: 3g
+    mem_reservation: 1g
+    memswap_limit: 3g
+    pids_limit: 512
+    shm_size: "1gb"
+    environment:
+      POC_VNC_PASSWORD: ${RMA_VNC_PASSWORD:?set RMA_VNC_PASSWORD (first 8 characters are used)}
+      POC_OMEGAFLOW_BASE_URL: ${OMEGAFLOW_BASE_URL:-https://omegaflow.ma}
+      POC_OMEGAFLOW_START_ROUTE: ${OMEGAFLOW_START_ROUTE:-https://omegaflow.ma/#dossiers-en-instance-accord/}
+      POC_LOCALE: fr-FR
+      POC_TIMEZONE: ${RMA_TIMEZONE:-Africa/Casablanca}
+      TZ: ${RMA_TIMEZONE:-Africa/Casablanca}
+      POC_SCREEN: ${RMA_SCREEN:-1440x900x24}
+    ports:
+      - target: 6080
+        published: "${RMA_NOVNC_PORT:-6081}"
+        host_ip: ${RMA_NOVNC_BIND_IP:?set RMA_NOVNC_BIND_IP (127.0.0.1)}
+        protocol: tcp
+    volumes:
+      - type: bind
+        source: ${RMA_STORAGE_ROOT:?set RMA_STORAGE_ROOT}/browser-profile
+        target: /var/lib/rma-poc/profile
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${RMA_STORAGE_ROOT:?set RMA_STORAGE_ROOT}/session-state
+        target: /var/lib/rma-poc/state
+        bind: {create_host_path: false}
+    healthcheck:
+      test: ["CMD", "/opt/rma-poc/bin/healthcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    networks: [rma-portal-net]
+    <<: *logging
+
+networks:
+  rma-portal-net:
+    name: rma-portal-net
