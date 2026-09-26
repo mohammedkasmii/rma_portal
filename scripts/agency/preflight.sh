@@ -3,7 +3,7 @@
 #
 #   scripts/agency/preflight.sh [--env-file F] [--compose-file F] [--storage-prepared]
 #                               [--require-images] [--manifest M] [--bundle TAR] [--allow-ai]
-#                               [--pre-config]
+#                               [--pre-config] [--existing-rma]
 #
 # It creates, writes, pulls, builds, starts, stops, restarts and prunes NOTHING, reads no
 # other application's secrets or environment, and prints no secret value: RMA secrets are
@@ -14,6 +14,11 @@
 # Pre-existing restarting/unhealthy containers of OTHER projects are WARNINGS: recorded,
 # never repaired, never a reason to touch them.
 #
+# --existing-rma (upgrades): allow the rma-portal Compose project, the documented rma-portal-*
+# containers and rma-portal-net, but only genuine ones (project label, bind mounts directly under
+# /data/rma-portal, web only on 192.168.1.32:8480, browser only on 127.0.0.1:6081). Default = strict
+# first-deployment mode, where any existing RMA resource is a blocker.
+#
 # Stage usage: Stage 1 with --pre-config (no env file exists yet), after Stage 2 add --storage-prepared, after Stage 4 add
 # --require-images --manifest <bundle manifest>.
 set -uo pipefail
@@ -23,7 +28,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 ENV_FILE="$RMA_DEFAULT_STORAGE_ROOT/config/.env"
 COMPOSE_FILE="$HERE/../../compose.agency.yaml"
-PRE_CONFIG=0; STORAGE_PREPARED=0; REQUIRE_IMAGES=0; MANIFEST=""; BUNDLE=""; ALLOW_AI=0
+EXISTING_RMA=0; PRE_CONFIG=0; STORAGE_PREPARED=0; REQUIRE_IMAGES=0; MANIFEST=""; BUNDLE=""; ALLOW_AI=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --env-file) ENV_FILE="${2:?}"; shift ;;
@@ -34,7 +39,8 @@ while [ $# -gt 0 ]; do
         --bundle) BUNDLE="${2:?}"; shift ;;
         --allow-ai) ALLOW_AI=1 ;;
         --pre-config) PRE_CONFIG=1 ;;
-        -h|--help) sed -n '2,19p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        --existing-rma) EXISTING_RMA=1 ;;
+        -h|--help) sed -n '2,24p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
     shift
@@ -110,11 +116,45 @@ if command -v docker >/dev/null 2>&1 && docker ps >/dev/null 2>&1; then
     echo "  containers total: $total, restarting: $(printf '%s' "$restarting" | grep -c . || true), unhealthy: $(printf '%s' "$unhealthy" | grep -c . || true)"
     [ -z "$restarting" ] || { warn "PRE-EXISTING restarting containers (recorded, never touched):"; printf '%s\n' "$restarting" | sed 's/^/           /'; }
     [ -z "$unhealthy" ] || { warn "PRE-EXISTING unhealthy containers (recorded, never touched):"; printf '%s\n' "$unhealthy" | sed 's/^/           /'; }
-    for name in "${RMA_CONTAINERS[@]}"; do
-        if printf '%s\n' "$listing" | cut -d'|' -f1 | grep -qx "$name"; then fail "container name collision: $name already exists"; fi
-    done
-    if docker compose ls -a --format json 2>/dev/null | grep -q '"Name":"rma-portal"'; then fail "a Compose project named rma-portal already exists"; fi
-    if docker network ls --format '{{.Name}}' | grep -qx "$RMA_NETWORK"; then fail "network name collision: $RMA_NETWORK already exists"; else ok "no rma-portal container or network collision"; fi
+    if [ "$EXISTING_RMA" -eq 0 ]; then
+        for name in "${RMA_CONTAINERS[@]}"; do
+            if printf '%s\n' "$listing" | cut -d'|' -f1 | grep -qx "$name"; then fail "container name collision: $name already exists"; fi
+        done
+        if docker compose ls -a --format json 2>/dev/null | grep -q '"Name":"rma-portal"'; then fail "a Compose project named rma-portal already exists"; fi
+        if docker network ls --format '{{.Name}}' | grep -qx "$RMA_NETWORK"; then fail "network name collision: $RMA_NETWORK already exists"; else ok "no rma-portal container or network collision"; fi
+    else
+        # Upgrade mode: existing RMA resources are expected, but only genuine ones of project rma-portal.
+        # Only names, labels, mount sources and published ports are read: never an environment.
+        rma_ports="$(docker ps -a --format '{{.Names}}|{{.Ports}}')"
+        rma_seen=0; rma_bad=0
+        while IFS='|' read -r cname _ cproj; do
+            case "$cname" in rma-portal*) ;; *) continue ;; esac
+            rma_seen=$((rma_seen + 1))
+            known=0; for want in "${RMA_CONTAINERS[@]}"; do if [ "$cname" = "$want" ]; then known=1; fi; done
+            if [ "$known" -eq 0 ]; then fail "unknown RMA-prefixed container: $cname"; rma_bad=1; continue; fi
+            if [ "$cproj" != "$RMA_PROJECT" ]; then fail "$cname belongs to Compose project '${cproj:-none}', not $RMA_PROJECT"; rma_bad=1; continue; fi
+            while read -r mtype msrc; do
+                [ -n "$mtype" ] || continue
+                case "$msrc" in
+                    "$ROOT"/*/*|"$ROOT"/..*) fail "$cname mount $msrc is not a direct child of $ROOT"; rma_bad=1 ;;
+                    "$ROOT"/?*) [ "$mtype" = "bind" ] || { fail "$cname has a non-bind mount ($mtype $msrc)"; rma_bad=1; } ;;
+                    *) fail "$cname mount $msrc is outside $ROOT"; rma_bad=1 ;;
+                esac
+            done < <(docker inspect --format '{{range .Mounts}}{{.Type}} {{.Source}}{{"\n"}}{{end}}' "$cname" 2>/dev/null)
+            published="$(printf '%s\n' "$rma_ports" | awk -F'|' -v n="$cname" '$1 == n {print $2}' | tr ',' '\n' | sed 's/^ *//' | grep -- '->' || true)"
+            case "$cname" in
+                rma-portal-web) want_pub="192.168.1.32:8480->8080/tcp" ;;
+                rma-portal-browser) want_pub="127.0.0.1:6081->6080/tcp" ;;
+                *) want_pub="" ;;
+            esac
+            if [ "$published" != "$want_pub" ]; then fail "$cname publishes '${published:-nothing}', expected '${want_pub:-nothing}'"; rma_bad=1; fi
+        done <<<"$listing"
+        if docker network ls --format '{{.Name}}' | grep -qx "$RMA_NETWORK"; then
+            netproj="$(docker network inspect --format '{{index .Labels "com.docker.compose.project"}}' "$RMA_NETWORK" 2>/dev/null)"
+            if [ "$netproj" = "$RMA_PROJECT" ]; then ok "$RMA_NETWORK belongs to project $RMA_PROJECT"; else fail "$RMA_NETWORK belongs to '${netproj:-no project}', not $RMA_PROJECT"; fi
+        fi
+        if [ "$rma_bad" -eq 0 ]; then ok "existing RMA resources ($rma_seen containers) are genuine rma-portal resources with the expected mounts and bindings"; fi
+    fi
 fi
 
 # ---- ports -------------------------------------------------------------------------------------------------------
@@ -125,7 +165,9 @@ if [ -f "$ENV_FILE" ]; then
 fi
 if command -v ss >/dev/null 2>&1; then
     for port in "$web_port" "$novnc_port"; do
-        if ss -H -ltn 2>/dev/null | awk '{print $4}' | grep -qE ":${port}\$"; then fail "port $port is already listening on this host"; else ok "port $port is free"; fi
+        if ss -H -ltn 2>/dev/null | awk '{print $4}' | grep -qE ":${port}\$"; then
+            if [ "$EXISTING_RMA" -eq 1 ]; then ok "port $port is listening (upgrade mode: its publisher is validated above)"; else fail "port $port is already listening on this host"; fi
+        else ok "port $port is free"; fi
     done
 else
     fail "ss is not available: cannot verify that ports $web_port and $novnc_port are free"

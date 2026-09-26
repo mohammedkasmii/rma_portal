@@ -425,7 +425,7 @@ docker compose --env-file /data/rma-portal/config/.env -f compose.agency.yaml up
 
 ## 7. Normal upgrade (later)
 
-New bundle → Stage 0/1 checks → Stage 4 (`load-images`, dry-run then `--apply`) → manual backup (§8) → set `RMA_VERSION=<new V>` (edit the one line; **keep `RMA_SESSION_SECRET`
+New bundle → Stage 0 checks → the upgrade preflight (run from the new release directory; `--existing-rma` accepts only genuine `rma-portal` containers, network and bind mounts, with web still on `192.168.1.32:8480` and browser on `127.0.0.1:6081`, and stays read-only): `bash scripts/agency/preflight.sh --storage-prepared --existing-rma` (the initial-deployment stages keep the strict default mode) → Stage 4 (`load-images`, dry-run then `--apply`) → manual backup (§8) → set `RMA_VERSION=<new V>` (edit the one line; **keep `RMA_SESSION_SECRET`
 unchanged**) → `run --rm --no-deps migrate` → repeat the start commands of Stages 7, 8, 10 and 12 in that order (each recreates only its own service), verifying each. Changing the session secret logs everyone out.
 
 ## 8. Rollback, backups and restore

@@ -221,3 +221,10 @@ def test_readme_links_the_runbook_and_the_release_files_exist():
         "scripts/agency/backup.sh",
     ):
         assert (ROOT / name).exists(), name
+
+
+def test_upgrade_section_uses_existing_rma_mode_and_initial_stages_stay_strict():
+    upgrade = TEXT[TEXT.index("## 7. Normal upgrade") : TEXT.index("## 8. ")]
+    assert "preflight.sh --storage-prepared --existing-rma" in upgrade
+    for number in range(15):
+        assert "--existing-rma" not in _stage(number), f"Stage {number} must use the strict default"

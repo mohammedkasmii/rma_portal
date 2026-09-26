@@ -718,3 +718,158 @@ def test_restore_rehearsal_is_isolated():
     for line in code.splitlines():
         if "docker rm" in line:
             assert '"$NAME"' in line
+
+
+# --- preflight collision handling: strict first deployment vs --existing-rma upgrade ----------------------
+
+FAKE_ENGINE = """#!/bin/sh
+d="$FAKE_DIR"
+echo "$@" >> "$d/calls.log"
+case "$1" in
+  version) echo 29.7.2 ;;
+  info) echo /var/lib/docker ;;
+  ps)
+    [ $# -eq 1 ] && exit 0
+    case "$*" in
+      *" -q"*) cat "$d/ids" ;;
+      *"{{.Ports}}"*) cat "$d/ports" ;;
+      *) cat "$d/listing" ;;
+    esac ;;
+  network)
+    case "$2" in ls) cat "$d/networks" ;; inspect) cat "$d/netlabel" ;; esac ;;
+  inspect) for a; do n="$a"; done; cat "$d/mounts_$n" 2>/dev/null ;;
+esac
+exit 0
+"""
+GOOD_NAMES = ["db", "api", "web", "browser", "worker"]
+GOOD_PORTS = {
+    "db": "5432/tcp",
+    "api": "8765/tcp",
+    "web": "192.168.1.32:8480->8080/tcp",
+    "browser": "127.0.0.1:6081->6080/tcp",
+    "worker": "",
+}
+MOUNT_DIRS = {
+    "db": "postgres",
+    "api": "app-data",
+    "web": "",
+    "browser": "session-state",
+    "worker": "logs",
+}
+
+
+def _w(path: Path, text: str) -> None:
+    path.write_bytes(text.encode())  # LF only: the fake engine is read by sh
+
+
+def _scenario(
+    tmp_path: Path, *, listing=None, ports=None, mounts=None, netlabel="rma-portal"
+) -> dict:
+    fake = tmp_path / "fake"
+    fake.mkdir()
+    rows = listing or [
+        (f"rma-portal-{n}", "Up 2 hours (healthy)", "rma-portal") for n in GOOD_NAMES
+    ]
+    _w(fake / "listing", "\n".join("|".join(r) for r in rows) + "\nother-app|Up 1 day|shexpert\n")
+    port_map = {f"rma-portal-{n}": p for n, p in GOOD_PORTS.items()} | (ports or {})
+    _w(fake / "ports", "\n".join(f"{n}|{p}" for n, p in port_map.items()) + "\n")
+    _w(fake / "ids", "aa\nbb\n")
+    _w(fake / "networks", "bridge\nrma-portal-net\n")
+    _w(fake / "netlabel", netlabel + "\n")
+    for n in GOOD_NAMES:
+        default = f"bind {STORAGE}/{MOUNT_DIRS[n]}\n" if MOUNT_DIRS[n] else ""
+        _w(fake / f"mounts_rma-portal-{n}", (mounts or {}).get(f"rma-portal-{n}", default))
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "docker").write_text(FAKE_ENGINE, encoding="utf-8", newline="\n")
+    (bin_dir / "docker").chmod(0o755)
+    env = _clean_env()
+    env["PATH"] = f"{bin_dir.as_posix()}{os.pathsep}{env['PATH']}"
+    env["FAKE_DIR"] = fake.as_posix()
+    return env
+
+
+def _preflight_out(env: dict, *flags: str) -> str:
+    result = _run(["scripts/agency/preflight.sh", "--pre-config", *flags], env=env)
+    return result.stdout
+
+
+def _fails(out: str) -> list[str]:
+    return [line for line in out.splitlines() if line.startswith("  [FAIL]")]
+
+
+@needs_bash
+def test_strict_initial_mode_rejects_any_existing_rma_resource(tmp_path):
+    fails = "\n".join(_fails(_preflight_out(_scenario(tmp_path))))
+    assert "container name collision: rma-portal-db" in fails
+    assert "network name collision: rma-portal-net" in fails
+
+
+@needs_bash
+def test_upgrade_mode_accepts_correctly_labelled_rma_resources_and_stays_read_only(tmp_path):
+    env = _scenario(tmp_path)
+    out = _preflight_out(env, "--existing-rma")
+    assert "existing RMA resources (5 containers) are genuine" in out
+    assert "rma-portal-net belongs to project rma-portal" in out
+    rma_fails = [f for f in _fails(out) if re.search(r"rma-portal|RMA-prefixed|publishes|mount", f)]
+    assert not rma_fails, rma_fails
+    calls = (tmp_path / "fake" / "calls.log").read_text().splitlines()
+    for call in calls:
+        assert not re.match(
+            r"(run|start|stop|restart|rm|rmi|kill|exec|pull|build|load|create|prune)\b", call
+        ), call
+        if call.startswith("inspect"):
+            assert "{{range .Mounts}}" in call and "Env" not in call and "Config" not in call, call
+
+
+@needs_bash
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    [
+        ("foreign_label", "rma-portal-api belongs to Compose project 'shexpert'"),
+        ("unknown_name", "unknown RMA-prefixed container: rma-portal-extra"),
+        ("mount_outside", "mount /var/lib/docker/volumes/x/_data is outside /data/rma-portal"),
+        (
+            "mount_nested",
+            "mount /data/rma-portal/app-data/sub is not a direct child of /data/rma-portal",
+        ),
+        ("mount_volume", "has a non-bind mount (volume /data/rma-portal/postgres)"),
+        ("network_owner", "rma-portal-net belongs to 'other', not rma-portal"),
+        (
+            "web_all_interfaces",
+            "rma-portal-web publishes '0.0.0.0:8480->8080/tcp', expected '192.168.1.32:8480->8080/tcp'",
+        ),
+        ("web_tailscale", "rma-portal-web publishes '100.89.63.25:8480->8080/tcp'"),
+        (
+            "browser_lan",
+            "rma-portal-browser publishes '192.168.1.32:6081->6080/tcp', expected '127.0.0.1:6081->6080/tcp'",
+        ),
+        ("api_published", "rma-portal-api publishes '0.0.0.0:8765->8765/tcp', expected 'nothing'"),
+    ],
+)
+def test_upgrade_mode_rejects_foreign_or_misconfigured_rma_resources(tmp_path, case, expected):
+    base = [(f"rma-portal-{n}", "Up 2 hours (healthy)", "rma-portal") for n in GOOD_NAMES]
+    kwargs: dict = {}
+    if case == "foreign_label":
+        base[1] = ("rma-portal-api", "Up", "shexpert")
+        kwargs["listing"] = base
+    elif case == "unknown_name":
+        kwargs["listing"] = [*base, ("rma-portal-extra", "Up", "rma-portal")]
+    elif case == "mount_outside":
+        kwargs["mounts"] = {"rma-portal-db": "bind /var/lib/docker/volumes/x/_data\n"}
+    elif case == "mount_nested":
+        kwargs["mounts"] = {"rma-portal-api": f"bind {STORAGE}/app-data/sub\n"}
+    elif case == "mount_volume":
+        kwargs["mounts"] = {"rma-portal-db": f"volume {STORAGE}/postgres\n"}
+    elif case == "network_owner":
+        kwargs["netlabel"] = "other"
+    elif case == "web_all_interfaces":
+        kwargs["ports"] = {"rma-portal-web": "0.0.0.0:8480->8080/tcp"}
+    elif case == "web_tailscale":
+        kwargs["ports"] = {"rma-portal-web": "100.89.63.25:8480->8080/tcp"}
+    elif case == "browser_lan":
+        kwargs["ports"] = {"rma-portal-browser": "192.168.1.32:6081->6080/tcp"}
+    elif case == "api_published":
+        kwargs["ports"] = {"rma-portal-api": "0.0.0.0:8765->8765/tcp"}
+    out = _preflight_out(_scenario(tmp_path, **kwargs), "--existing-rma")
+    assert any(expected in line for line in _fails(out)), (expected, _fails(out))
