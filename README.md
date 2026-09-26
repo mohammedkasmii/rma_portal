@@ -14,6 +14,8 @@ OmegaFlow.
 
 Le déploiement de production (PostgreSQL, API, worker, frontend React, bureau noVNC) est décrit
 dans `docs/ubuntu-production-runbook.md` (`compose.prod.yaml`, `.env.example`, `scripts/prod/`).
+Déploiement sur le serveur Ubuntu partagé de l'agence (isolé, par étapes, réversible) : `docs/agency-production-deployment.md`
+(`compose.agency.yaml`, `.env.agency.example`, `scripts/agency/`).
 Commandes utiles : `rma-portal migrate`, `rma-portal worker`, `rma-portal import-sqlite --source <fichier>`.
 
 Vérifications locales : `uv run ruff check src tests alembic scripts`, `uv run pytest`,
