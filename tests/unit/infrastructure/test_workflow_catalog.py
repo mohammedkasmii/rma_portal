@@ -30,7 +30,6 @@ PROCEDURE_VALUES = {
     "agreement_normal": "5eebcdf9c791c6001505bd70",
     "agreement_appreciation": "6039196ec1fce4001c27ab66",
     "agreement_collegial_cid": "5f3e5a57696b8700158842e6",
-    "agreement_hifad": "5ee405e42e70690015f4dcb0",
 }
 
 EMPTY_CAPTURED = {
@@ -104,11 +103,28 @@ def test_second_agreement_route_is_the_captured_scene_116_route(catalog):
     assert (definition.scene_id, definition.view_id) == ("scene_116", "view_149")
 
 
-def test_rules_status_only_garage_is_confirmed_and_informational_classes(catalog):
+def test_confirmed_status_routing_for_garage_and_hifad(catalog):
+    garage = catalog.get("agreement_garage")
+    agreement_hifad = catalog.get("agreement_hifad")
+    hifad_search = catalog.get("hifad_search")
+
+    assert garage.included_portal_statuses == {"Devis envoyé par le garage"}
+    assert (agreement_hifad.route, agreement_hifad.view_id) == (
+        "#recherche-dossiers-hifad/",
+        "view_1867",
+    )
+    assert agreement_hifad.filter is None
+    assert agreement_hifad.submit_search_on_open
+    assert agreement_hifad.included_portal_statuses == {"Dossier créé"}
+    assert hifad_search.excluded_portal_statuses == {"Dossier créé"}
+    assert garage.catalog_version == agreement_hifad.catalog_version == hifad_search.catalog_version == 2
+
+
+def test_rules_status_confirmed_for_agency_approved_workflows_and_informational_classes(catalog):
     for definition in catalog.definitions():
         expected = (
             WorkflowRulesStatus.CONFIRMED
-            if definition.key == "agreement_garage"
+            if definition.key in {"agreement_garage", "agreement_hifad"}
             else WorkflowRulesStatus.CAPTURE_DERIVED
         )
         assert definition.rules_status is expected, definition.key
@@ -197,6 +213,8 @@ def test_definition_rejects_duplicate_or_unknown_field_keys():
         WorkflowDefinition(**base, fields=(field, field))
     with pytest.raises(ValueError, match="unknown"):
         WorkflowDefinition(**base, fields=(field,), primary_date=("missing",))
+    with pytest.raises(ValueError, match="portal_status"):
+        WorkflowDefinition(**base, fields=(field,), included_portal_statuses=frozenset({"X"}))
 
 
 def test_catalog_rejects_duplicate_workflow_keys(catalog):

@@ -63,12 +63,12 @@ producing memberships when OmegaFlow later contains records.
 
 | Key | French label | Route | View | Class | Primary display/sort evidence |
 |---|---|---|---|---|---|
-| `agreement_garage` | Instance d'accord - Garage agree | `#dossiers-en-instance-accord/` | `view_1874` | ACTION | `field_114` Date envoi devis garage |
+| `agreement_garage` | Instance d'accord - Garage agree | `#dossiers-en-instance-accord/` | `view_1874` + status `Devis envoyé par le garage` | ACTION | `field_114` Date envoi devis garage |
 | `agreement_normal` | Instance d'accord - Procedure normale | same | `view_1874` + `field_219=5eebcdf9c791c6001505bd70` | ACTION | quote/detail dates, then detection time |
 | `agreement_appreciation` | Instance d'accord - Appreciation | same | `view_1874` + `field_219=6039196ec1fce4001c27ab66` | ACTION | quote/detail dates, then detection time |
 | `agreement_collegial_cid` | Instance d'accord - Expertise Collegiale CID | same | `view_1874` + `field_219=5f3e5a57696b8700158842e6` | ACTION | quote/detail dates, then detection time |
-| `agreement_hifad` | Instance d'accord - Hifad | same | `view_1874` + `field_219=5ee405e42e70690015f4dcb0` | ACTION | quote/detail dates, then detection time |
-| `hifad_search` | Dossiers Hifad | `#recherche-dossiers-hifad/` | `view_1867` | ACTION | captured `field_107` raw date, then detection time |
+| `agreement_hifad` | Instance d'accord - Hifad | `#recherche-dossiers-hifad/` | `view_1867` + status `Dossier créé` | ACTION | captured `field_107` raw date, then detection time |
+| `hifad_search` | Dossiers Hifad | `#recherche-dossiers-hifad/` | `view_1867`, excluding status `Dossier créé` | ACTION | captured `field_107` raw date, then detection time |
 | `estimate_pending` | Dossiers en instance de devis | `#dossiers-en-instance-devis-photos/` | `view_655` | ACTION | `field_107` mission date |
 | `photos_pending` | Dossiers en instance Photos | `#dossiers-en-instance-photos/` | `view_787` | ACTION | `field_652` Date envoi, then photo dates |
 | `fft_garage_pending` | Dossiers en instance de FFT - Garage agree | `#dossiers-en-instance-fft2/` | `view_90` | ACTION | `field_133` Date envoi facture, then `field_132` |
@@ -88,6 +88,11 @@ producing memberships when OmegaFlow later contains records.
 `report_pending` may later be split by procedure when live data proves employees need distinct
 queues. The reader already supports a filter definition, so this requires catalog data rather than
 a new reader.
+
+The agency confirmed on 26 November 2026 that Garage agréé membership requires OmegaFlow status
+`Devis envoyé par le garage`. It also confirmed that Hifad rows with status `Dossier créé` belong
+to `agreement_hifad`, not `hifad_search`; both logical workflows read the captured Hifad search view
+and partition its rows by status before baselining, reconciliation or notification creation.
 
 ## Target architecture
 

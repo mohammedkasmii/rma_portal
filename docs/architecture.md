@@ -73,6 +73,11 @@ whose path contains `/records`, and it never clicks a submit, validation,
 agreement or upload control. See section 7 of the original product spec and
 `docs/omegaflow-contract.md` for the exact contract.
 
+Knack's renderer also emits automatic `DELETE /v1/session/<id>` housekeeping requests. They remain
+blocked, but are recorded separately from dangerous record-write attempts so the production safety
+counter continues to mean exactly what its stop condition says; record PUT/PATCH/DELETE and record
+POST requests are still denied and logged as `blocked non-read-only OmegaFlow request`.
+
 Authentication is established out-of-band, in a **visible** persistent
 Camoufox profile, so an employee can log in and pass session validation by
 hand. The application never reads, requests or stores the OmegaFlow

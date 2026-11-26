@@ -7,6 +7,7 @@ definition proves the generic parser is a drop-in replacement for the V1 one.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -22,7 +23,11 @@ from rma_portal.infrastructure.portal.workflow_parser import (
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
-GARAGE = default_catalog().get("agreement_garage")
+# These historical fixtures prove structural parsing of the captured V1 page. Status-routing is
+# covered separately with current business values in ``test_workflow_parser.py``.
+GARAGE = replace(
+    default_catalog().get("agreement_garage"), included_portal_statuses=frozenset()
+)
 
 
 def _read(name: str) -> str:

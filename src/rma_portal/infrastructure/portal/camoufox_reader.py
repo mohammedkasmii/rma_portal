@@ -15,7 +15,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from types import TracebackType
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 from camoufox.addons import DefaultAddons
 from camoufox.async_api import AsyncCamoufox
@@ -78,6 +78,21 @@ _SEARCH_SUBMIT_SELECTOR = '#view_1874 form.kn-search_form button[type="submit"]'
 _PAGE_SELECT = ".kn-page-select"
 _NEXT_PAGE = ".kn-change-page.kn-next"
 _LEGACY_ROOT = AUTHENTICATED_VIEW_SELECTOR
+
+
+def _is_renderer_session_cleanup(method: str, url: str) -> bool:
+    """Identify Knack's automatic renderer-session cleanup, never a record mutation.
+
+    The request remains blocked to preserve the adapter's deny-all-write boundary. Keeping it out
+    of ``blocked_write_attempts`` prevents a known browser housekeeping request from masking a
+    genuine PUT/PATCH/record DELETE/record POST during production acceptance.
+    """
+    if method != "DELETE":
+        return False
+    parsed = urlsplit(url)
+    host = (parsed.hostname or "").casefold()
+    path = parsed.path.rstrip("/")
+    return host.endswith("renderer-write.knack.com") and path.startswith("/v1/session/")
 _PAGE_TRANSITION_TIMEOUT_MS = 20_000
 _MAX_PAGES = 200
 _STABLE_POLL_MS = 300
@@ -235,6 +250,7 @@ class CamoufoxPortalReader:
         self._current_route: str | None = None
         self._detail_cache: dict[str, DossierDetailValues] = {}
         self.blocked_write_attempts: list[str] = []
+        self.blocked_session_cleanup_attempts = 0
 
     async def __aenter__(self) -> CamoufoxPortalReader:
         self._lock_cm = acquire_profile_lock(self._lock_path)
@@ -313,10 +329,15 @@ class CamoufoxPortalReader:
             method in {"PUT", "PATCH", "DELETE"} or (method == "POST" and "/records" in url)
         )
         if blocked:
-            self.blocked_write_attempts.append(f"{method} {request.url}")
-            logger.warning(
-                "blocked non-read-only OmegaFlow request: %s %s", method, strip_query(request.url)
-            )
+            if _is_renderer_session_cleanup(method, request.url):
+                self.blocked_session_cleanup_attempts += 1
+            else:
+                self.blocked_write_attempts.append(f"{method} {request.url}")
+                logger.warning(
+                    "blocked non-read-only OmegaFlow request: %s %s",
+                    method,
+                    strip_query(request.url),
+                )
             await route.abort("blockedbyclient")
             return
         await route.continue_()
@@ -579,6 +600,7 @@ class CamoufoxPortalReader:
         root = definition.root_selector
         collected: list[WorkflowSnapshot] = []
         writes_before = len(self.blocked_write_attempts)
+        cleanups_before = self.blocked_session_cleanup_attempts
         started = time.perf_counter()
         try:
             with log_stage(logger, "workflow_navigation", workflow=definition.key):
@@ -658,6 +680,12 @@ class CamoufoxPortalReader:
                     "workflow %s attempted %d blocked non-read-only request(s)",
                     definition.key,
                     len(self.blocked_write_attempts) - writes_before,
+                )
+            if self.blocked_session_cleanup_attempts > cleanups_before:
+                logger.info(
+                    "workflow %s blocked %d renderer session cleanup request(s)",
+                    definition.key,
+                    self.blocked_session_cleanup_attempts - cleanups_before,
                 )
 
         merged = merge_workflow_snapshots(definition, collected)

@@ -36,11 +36,20 @@ def _reader(site: FakeSite) -> tuple[CamoufoxPortalReader, FakeKnackPage]:
     return reader, page
 
 
-def _rows(prefix: str, count: int, start: int = 0) -> list[dict]:
+def _rows(
+    prefix: str, count: int, start: int = 0, *, portal_status: str = "En cours"
+) -> list[dict]:
     return [
-        synthetic_row(f"{prefix}{n:03d}", dossier_number=f"D-{n}", portal_status="En cours")
+        synthetic_row(
+            f"{prefix}{n:03d}", dossier_number=f"D-{n}", portal_status=portal_status
+        )
         for n in range(start, start + count)
     ]
+
+
+def _eligible_rows(definition, prefix: str, count: int, start: int = 0) -> list[dict]:
+    status = next(iter(definition.included_portal_statuses), "En cours")
+    return _rows(prefix, count, start, portal_status=status)
 
 
 def _definition(key: str):
@@ -166,7 +175,15 @@ async def test_the_filter_is_applied_before_the_table_header_is_required():
 async def test_the_header_appearing_after_submission_proceeds_to_parsing():
     definition = _definition("agreement_garage")
     reader, _ = _reader(
-        _agreement_site(definition, by_filter={definition.filter.value: [_rows("g", 3), _rows("h", 2)]})
+        _agreement_site(
+            definition,
+            by_filter={
+                definition.filter.value: [
+                    _eligible_rows(definition, "g", 3),
+                    _eligible_rows(definition, "h", 2),
+                ]
+            },
+        )
     )
 
     outcome = await reader.read_workflow(definition)
@@ -177,7 +194,7 @@ async def test_the_header_appearing_after_submission_proceeds_to_parsing():
 
 @pytest.mark.asyncio
 async def test_an_empty_filtered_table_is_complete_with_zero_rows():
-    definition = _definition("agreement_hifad")
+    definition = _definition("agreement_appreciation")
     reader, _ = _reader(_agreement_site(definition, by_filter={definition.filter.value: [[]]}))
 
     outcome = await reader.read_workflow(definition)
@@ -243,7 +260,10 @@ async def test_garage_then_detail_enrichment_then_procedure_normale_still_finds_
     normal = _definition("agreement_normal")
     queue = FakeQueue(
         garage,
-        by_filter={garage.filter.value: [_rows("g", 2)], normal.filter.value: [_rows("n", 3)]},
+        by_filter={
+            garage.filter.value: [_eligible_rows(garage, "g", 2)],
+            normal.filter.value: [_rows("n", 3)],
+        },
         header_after_filter=True,
     )
     site = FakeSite({garage.route: [queue]})
@@ -261,11 +281,18 @@ async def test_garage_then_detail_enrichment_then_procedure_normale_still_finds_
 
 @pytest.mark.asyncio
 async def test_sequential_shared_route_agreement_filters_each_start_from_a_fresh_scene():
-    keys = ["agreement_garage", "agreement_normal", "agreement_appreciation", "agreement_collegial_cid", "agreement_hifad"]
+    keys = [
+        "agreement_garage",
+        "agreement_normal",
+        "agreement_appreciation",
+        "agreement_collegial_cid",
+    ]
     definitions = [_definition(key) for key in keys]
     queue = FakeQueue(
         definitions[0],
-        by_filter={d.filter.value: [_rows(d.key[10:13], 2)] for d in definitions},
+        by_filter={
+            d.filter.value: [_eligible_rows(d, d.key[10:13], 2)] for d in definitions
+        },
         header_after_filter=True,
     )
     site = FakeSite({definitions[0].route: [queue]})
@@ -346,17 +373,21 @@ def _search_clicks(page) -> list[str]:
     return [c for c in page.clicks if "kn-search_form" in c]
 
 
-def test_only_the_two_search_first_views_submit_their_search_on_open():
+def test_only_the_three_search_first_views_submit_their_search_on_open():
     flagged = {d.key for d in CATALOG.definitions() if d.submit_search_on_open}
-    assert flagged == {"hifad_search", "report_pending"}
+    assert flagged == {"agreement_hifad", "hifad_search", "report_pending"}
     assert all(_definition(key).filter is None for key in flagged)  # the model never mixes both
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("key", ["hifad_search", "report_pending"])
+@pytest.mark.parametrize("key", ["agreement_hifad", "hifad_search", "report_pending"])
 async def test_a_search_first_workflow_submits_its_initial_search_once_and_reads_rows(key):
     definition = _definition(key)
-    queue = FakeQueue(definition, pages=[_rows("s", 3), _rows("t", 2)], header_after_filter=True)
+    queue = FakeQueue(
+        definition,
+        pages=[_eligible_rows(definition, "s", 3), _eligible_rows(definition, "t", 2)],
+        header_after_filter=True,
+    )
     reader, page = _reader(FakeSite({definition.route: [queue]}))
     events = _spy_readiness(reader)
 
@@ -504,28 +535,37 @@ async def test_one_failed_workflow_never_stops_or_invalidates_the_others():
 
 
 @pytest.mark.asyncio
-async def test_agreement_variants_share_a_route_and_each_gets_its_own_filter_and_fresh_page():
+async def test_filtered_agreement_variants_share_a_route_and_get_fresh_pages():
     garage = _definition("agreement_garage")
     normal = _definition("agreement_normal")
-    hifad = _definition("agreement_hifad")
-    assert garage.route == normal.route == hifad.route
+    appreciation = _definition("agreement_appreciation")
+    assert garage.route == normal.route == appreciation.route
     queue = FakeQueue(
         garage,  # one shared view_1874 on the route
         by_filter={
-            garage.filter.value: [_rows("g", 3), _rows("h", 2)],
+            garage.filter.value: [
+                _eligible_rows(garage, "g", 3),
+                _eligible_rows(garage, "h", 2),
+            ],
             normal.filter.value: [_rows("n", 4)],
-            hifad.filter.value: [[]],  # captured empty result
+            appreciation.filter.value: [[]],
         },
     )
     reader, page = _reader(FakeSite({garage.route: [queue]}))
 
-    outcomes = await reader.read_workflows([garage, normal, hifad])
+    outcomes = await reader.read_workflows([garage, normal, appreciation])
 
-    assert [len(outcomes[k].snapshot.rows) for k in (garage.key, normal.key, hifad.key)] == [5, 4, 0]
+    assert [
+        len(outcomes[k].snapshot.rows) for k in (garage.key, normal.key, appreciation.key)
+    ] == [5, 4, 0]
     assert all(o.status is PollStatus.COMPLETE for o in outcomes.values())
     # Exact captured procedure option values, applied on the hidden Chosen select.
     filter_calls = [value for selector, value in page.select_calls if "kn-conn" in selector]
-    assert filter_calls == [garage.filter.value, normal.filter.value, hifad.filter.value]
+    assert filter_calls == [
+        garage.filter.value,
+        normal.filter.value,
+        appreciation.filter.value,
+    ]
     # Every workflow goes home first so its scene is genuinely rebuilt, never a no-op hash jump.
     home = workflow_url(BASE_URL, "#accueil/")
     route = workflow_url(BASE_URL, garage.route)
@@ -663,6 +703,25 @@ async def test_read_only_route_blocks_writes_to_the_portal_only(method, url, blo
     assert (route.aborted == "blockedbyclient") is blocked
     assert route.continued is not blocked
     assert bool(reader.blocked_write_attempts) is blocked
+
+
+@pytest.mark.asyncio
+async def test_renderer_session_cleanup_stays_blocked_without_becoming_a_record_write_alert():
+    reader, _ = _reader(FakeSite({}))
+    route = _Route()
+
+    await reader._read_only_route(
+        route,
+        _Request(
+            "DELETE",
+            "https://eu-central-1-renderer-write.knack.com/v1/session/5ff8b075ac3fcf001d8d3b9d",
+        ),
+    )
+
+    assert route.aborted == "blockedbyclient"
+    assert not route.continued
+    assert reader.blocked_write_attempts == []
+    assert reader.blocked_session_cleanup_attempts == 1
 
 
 @pytest.mark.asyncio

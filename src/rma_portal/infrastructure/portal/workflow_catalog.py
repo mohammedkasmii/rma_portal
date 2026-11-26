@@ -141,7 +141,9 @@ def _agreement(
     order: int,
     *,
     garage: bool = False,
+    included_portal_statuses: frozenset[str] = frozenset(),
     rules: WorkflowRulesStatus = _DERIVED,
+    catalog_version: int = CATALOG_VERSION,
     evidence: str,
 ) -> WorkflowDefinition:
     # Garage agréé's quote-sent date is the employees' known reference; the other
@@ -162,9 +164,28 @@ def _agreement(
         detail_required=("date_envoi_devis_garage",),
         # Garage agréé keeps its historical behaviour: a blank quote date is re-read every poll.
         detail_refresh_seconds=0 if garage else 3600,
+        included_portal_statuses=included_portal_statuses,
         filter=FilterSpec("field_219", "is", option_value, option_label, _AGREEMENT_CONTROL),
+        catalog_version=catalog_version,
         evidence=evidence,
     )
+
+
+_HIFAD_SEARCH_FIELDS = (
+    NUMBER,
+    NAME,
+    PROCEDURE,
+    REGISTRATION,
+    STATUS,
+    OBSERVATIONS,
+    ACCIDENT_DATE,
+    # field_107 is rendered as "Date mis." in this list.
+    _list("date_mission", "field_107", "Date mis.", FieldKind.DATE, date=True),
+    _list("code_action", "field_529", "Code", FieldKind.ACTION),
+    _list("photos_before_repair", "field_261", "Photos avant réparation", FieldKind.ACTION),
+    _list("offer_report", "field_23", "Offre / rapport", FieldKind.ACTION),
+    _list("report_action", "field_768", "Rapport", FieldKind.ACTION),
+)
 
 
 CATALOG: tuple[WorkflowDefinition, ...] = (
@@ -175,8 +196,10 @@ CATALOG: tuple[WorkflowDefinition, ...] = (
         "5ed644a2faf17c0015d8c367",
         10,
         garage=True,
+        included_portal_statuses=frozenset({"Devis envoyé par le garage"}),
         rules=WorkflowRulesStatus.CONFIRMED,
-        evidence="Production since V1; page 1 of 2 in cbdfdf.",
+        catalog_version=2,
+        evidence="Production since V1; status rule confirmed by the agency on 2026-11-26.",
     ),
     _agreement(
         "agreement_normal",
@@ -202,13 +225,22 @@ CATALOG: tuple[WorkflowDefinition, ...] = (
         40,
         evidence="fc4958: one page, two rows.",
     ),
-    _agreement(
-        "agreement_hifad",
-        "Instance d'accord - Hifad",
-        "Hifad",
-        "5ee405e42e70690015f4dcb0",
-        50,
-        evidence="00f0cc: valid empty result (selected twice).",
+    WorkflowDefinition(
+        key="agreement_hifad",
+        name="Instance d'accord - Hifad",
+        category="Instance d'accord",
+        route="#recherche-dossiers-hifad/",
+        view_id="view_1867",
+        scene_id="scene_1066",
+        notification_class=_ACTION,
+        rules_status=WorkflowRulesStatus.CONFIRMED,
+        sort_order=50,
+        fields=_HIFAD_SEARCH_FIELDS,
+        primary_date=("date_mission",),
+        submit_search_on_open=True,
+        included_portal_statuses=frozenset({"Dossier créé"}),
+        catalog_version=2,
+        evidence="688e53 capture; Dossier créé routing confirmed by the agency on 2026-11-26.",
     ),
     WorkflowDefinition(
         key="hifad_search",
@@ -220,25 +252,13 @@ CATALOG: tuple[WorkflowDefinition, ...] = (
         notification_class=_ACTION,
         rules_status=_DERIVED,
         sort_order=60,
-        fields=(
-            NUMBER,
-            NAME,
-            PROCEDURE,
-            REGISTRATION,
-            STATUS,
-            OBSERVATIONS,
-            ACCIDENT_DATE,
-            # field_107 is rendered as "Date mis." in this list.
-            _list("date_mission", "field_107", "Date mis.", FieldKind.DATE, date=True),
-            _list("code_action", "field_529", "Code", FieldKind.ACTION),
-            _list("photos_before_repair", "field_261", "Photos avant réparation", FieldKind.ACTION),
-            _list("offer_report", "field_23", "Offre / rapport", FieldKind.ACTION),
-            _list("report_action", "field_768", "Rapport", FieldKind.ACTION),
-        ),
+        fields=_HIFAD_SEARCH_FIELDS,
         primary_date=("date_mission",),
         submit_search_on_open=True,
-        evidence="688e53: one page, ten rows; one detail visit. Search-first view: live diagnostics "
-        "show view_1867 and view_1867-search rendered without a table until the form is submitted.",
+        excluded_portal_statuses=frozenset({"Dossier créé"}),
+        catalog_version=2,
+        evidence="688e53: search-first view; Dossier créé rows route to agreement_hifad per the "
+        "agency decision of 2026-11-26.",
     ),
     WorkflowDefinition(
         key="estimate_pending",

@@ -10,6 +10,7 @@ queue is described exactly once.
 from __future__ import annotations
 
 import enum
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from rma_portal.domain.enums import NotificationClass, WorkflowRulesStatus
@@ -129,6 +130,13 @@ class WorkflowDefinition:
     blank is re-read, at most once per ``detail_refresh_seconds``."""
 
     detail_refresh_seconds: int = 3600
+    included_portal_statuses: frozenset[str] = frozenset()
+    """When non-empty, only list rows with one of these OmegaFlow statuses belong to
+    this logical workflow. Comparison ignores case and repeated whitespace."""
+
+    excluded_portal_statuses: frozenset[str] = frozenset()
+    """Statuses routed to another logical workflow even when they share this view."""
+
     scene_id: str | None = None
     """Captured Knack scene id (documentation and API-contract evidence)."""
 
@@ -162,6 +170,14 @@ class WorkflowDefinition:
             missing = [key for key in referenced if key not in known]
             if missing:
                 raise ValueError(f"{self.key}: {name} references unknown fields {missing}")
+        if self.included_portal_statuses or self.excluded_portal_statuses:
+            if "portal_status" not in known:
+                raise ValueError(f"{self.key}: status routing requires a portal_status field")
+            included = {_normalise_status(value) for value in self.included_portal_statuses}
+            excluded = {_normalise_status(value) for value in self.excluded_portal_statuses}
+            overlap = sorted(included & excluded)
+            if overlap:
+                raise ValueError(f"{self.key}: status routing overlaps for {overlap}")
         list_material = {
             spec.key
             for spec in self.fields
@@ -196,3 +212,21 @@ class WorkflowDefinition:
     @property
     def requires_detail(self) -> bool:
         return bool(self.detail_required)
+
+    def includes_list_row(self, fields: Mapping[str, str]) -> bool:
+        """Whether a rendered row belongs to this logical workflow.
+
+        Several employee workflows can share one physical OmegaFlow view. Routing here keeps
+        ineligible rows out of baselines, memberships and notifications instead of hiding them
+        later in the frontend.
+        """
+        status = _normalise_status(fields.get("portal_status", ""))
+        included = {_normalise_status(value) for value in self.included_portal_statuses}
+        excluded = {_normalise_status(value) for value in self.excluded_portal_statuses}
+        if included and status not in included:
+            return False
+        return status not in excluded
+
+
+def _normalise_status(value: str) -> str:
+    return " ".join(value.split()).casefold()

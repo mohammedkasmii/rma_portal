@@ -30,6 +30,8 @@ PHOTOS = CATALOG.get("photos_pending")
 @pytest.mark.parametrize("definition", ALL_DEFINITIONS, ids=lambda d: d.key)
 def test_every_catalogued_view_round_trips_all_of_its_list_fields(definition):
     values = {spec.key: f"valeur {spec.css_class}" for spec in definition.list_fields}
+    if definition.included_portal_statuses:
+        values["portal_status"] = next(iter(definition.included_portal_statuses))
     html = render_view(definition, [synthetic_row("rec00000000000000000001", **values)])
 
     snapshot = parse_workflow_page(html, definition)
@@ -39,6 +41,35 @@ def test_every_catalogued_view_round_trips_all_of_its_list_fields(definition):
     assert row.fields == values
     assert snapshot.workflow_key == definition.key
     assert row.details_href.endswith("/view-dossier-details/rec00000000000000000001/")
+
+
+def test_garage_keeps_only_the_confirmed_quote_sent_status():
+    garage = CATALOG.get("agreement_garage")
+    html = render_view(
+        garage,
+        [
+            synthetic_row("eligible", portal_status="  DEVIS envoyé  par le garage "),
+            synthetic_row("other", portal_status="Instance Accord compagnie"),
+        ],
+    )
+
+    assert [row.record_id for row in parse_workflow_page(html, garage).rows] == ["eligible"]
+
+
+def test_hifad_created_rows_route_to_agreement_and_not_search():
+    agreement = CATALOG.get("agreement_hifad")
+    search = CATALOG.get("hifad_search")
+    rows = [
+        synthetic_row("created", procedure="Hifad", portal_status="Dossier créé"),
+        synthetic_row("other", procedure="Hifad", portal_status="En cours"),
+    ]
+
+    assert [row.record_id for row in parse_workflow_page(render_view(agreement, rows), agreement).rows] == [
+        "created"
+    ]
+    assert [row.record_id for row in parse_workflow_page(render_view(search, rows), search).rows] == [
+        "other"
+    ]
 
 
 def test_exact_details_link_wins_over_the_decoy_observation_link():

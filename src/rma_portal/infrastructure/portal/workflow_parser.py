@@ -62,10 +62,12 @@ def parse_workflow_page(html: str, definition: WorkflowDefinition) -> WorkflowSn
         record_id = str(row.get("id", "")).strip()
         if not record_id or record_id in seen:
             continue
-        seen.add(record_id)
         fields = {
             spec.key: _text(row.select_one(f".{spec.css_class}")) for spec in definition.list_fields
         }
+        if not definition.includes_list_row(fields):
+            continue
+        seen.add(record_id)
         rows.append(
             WorkflowQueueRow(record_id=record_id, details_href=_details_href(row), fields=fields)
         )

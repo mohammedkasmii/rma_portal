@@ -90,7 +90,12 @@ class FakeAdvisor:
 
 
 def _service(uow_factory, advisor) -> AdvisorService:
-    work = WorkService(uow_factory, default_catalog(), base_url="https://omegaflow.example")
+    work = WorkService(
+        uow_factory,
+        default_catalog(),
+        base_url="https://omegaflow.example",
+        clock=lambda: NOW,
+    )
     return AdvisorService(uow_factory, work, advisor, clock=lambda: NOW)
 
 
